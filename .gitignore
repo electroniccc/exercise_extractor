@@ -1,0 +1,10 @@
+.venv
+__pycache__/
+*.pyc
+.ocr_cache
+*.log
+
+all_output
+output
+books.txt
+temp
