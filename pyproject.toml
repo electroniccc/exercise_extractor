@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "exercise-extractor"
+version = "0.1.0"
+description = "从数学教材/习题集/试卷 PDF 中自动提取习题（OCR + 规则切分）"
+requires-python = ">=3.10"
+dependencies = [
+    "pymupdf",
+    "numpy",
+    "opencv-python",
+    "Pillow",
+    "paddleocr",
+]
+
+[project.scripts]
+exercise-extractor = "exercise_extractor.main:main"
+
+[tool.setuptools]
+packages = ["exercise_extractor"]

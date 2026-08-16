@@ -1,0 +1,4 @@
+<div><img src="a.jpg" /></div>
+<div>(a)</div>
+<div><img src="b.jpg" /></div>
+<div>图 1-1</div>
