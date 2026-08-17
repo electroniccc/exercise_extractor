@@ -48,6 +48,14 @@ def extract_exercise(
     ocr_engine: Optional[str] = None,
     toc_device: Optional[str] = None,
     toc_engine: Optional[str] = None,
+    oss_endpoint: Optional[str] = None,
+    oss_access_key: Optional[str] = None,
+    oss_secret_key: Optional[str] = None,
+    oss_bucket: Optional[str] = None,
+    oss_region: Optional[str] = None,
+    oss_prefix: str = "",
+    oss_use_ssl: bool = False,
+    oss_public_base_url: Optional[str] = None,
     vl_server_url: Optional[str] = None,
     vl_model: Optional[str] = None,
     write_outputs: bool = False,
@@ -68,6 +76,10 @@ def extract_exercise(
     toc_device / toc_engine：toc_forge 目录识别的设备与引擎
     （如 engine="onnxruntime" 使用模型目录下的 inference.onnx），
     None 时交给 toc_forge 默认。
+    oss_*：OSS/MinIO 配置。四个必填项（endpoint/access_key/secret_key/
+    bucket）齐全时启用图片上传：把 markdown 里的本地图片传到 OSS，
+    src 替换为公开 URL（优先 oss_public_base_url，否则
+    http(s)://endpoint/bucket/对象键）；缺任一项则不启用。
     write_outputs=True 时必须同时给 output_dir，会额外写出
     md / exercises.json / report.json；默认只返回数据不落盘。
 
@@ -107,6 +119,14 @@ def extract_exercise(
         ocr_engine=ocr_engine,
         toc_device=toc_device,
         toc_engine=toc_engine,
+        oss_endpoint=oss_endpoint,
+        oss_access_key=oss_access_key,
+        oss_secret_key=oss_secret_key,
+        oss_bucket=oss_bucket,
+        oss_region=oss_region,
+        oss_prefix=oss_prefix,
+        oss_use_ssl=oss_use_ssl,
+        oss_public_base_url=oss_public_base_url,
         vl_model=vl_model,
         doc_type=doc_type,
     )

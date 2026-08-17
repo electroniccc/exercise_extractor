@@ -10,6 +10,7 @@
 | `exercise_extractor/pipeline.py` | 可复用提取管线：`run_pipeline` 整树一次处理（CLI 用）、`iter_sections` 流式逐节处理（对外 API 用）：答案节点先 OCR 切块，再按树序逐节 OCR → 拼页 → 切分 → 回填答案 → yield |
 | `exercise_extractor/api.py` | 对外公共 API `extract_exercise(source, source_type="pdf", doc_type, ...)`：输入 PDF 路径，返回**按节流式产出**的迭代器（每完成一个 section 就 yield 一个，与 exercises.json 节点同结构）；OCR 引擎参数（vl_rec_backend/vl_rec_server_url/vl_rec_max_concurrency/vl_rec_api_model_name）与 ocr/toc 的 engine/device（ocr_device/ocr_engine/toc_device/toc_engine）全部可配；预留 source_type 扩展 image/markdown |
 | `exercise_extractor/__main__.py` | `python -m exercise_extractor` 调试入口（等价于仓库根 `python main.py`） |
+| `exercise_extractor/oss.py` | OSS/MinIO 图片上传：传 oss_* 参数（endpoint/access_key/secret_key/bucket）时，把 markdown 里的本地图片上传并把 src 替换为 OSS 公开 URL；缺配置完全不生效 |
 | `exercise_extractor/ocr.py` | 目录识别（build_sections，toc_forge + 阿里云 vLLM）与 OCR（ocr_pages，PaddleOCR-VL） |
 | `exercise_extractor/extraction.py` | 提取链：目录树 → 习题区域（build_section_tree）、待 OCR 页码、拼页、规则切分（extract_exercises）；后续 LLM 检查/审核在此插入 |
 | `exercise_extractor/exercise_book.py` | 习题集专用流程：有目录按目录层级整节提取，无目录整本 OCR 后按小标题层级切块；题号切分/图注/表格与 textbook 共用 |
@@ -22,7 +23,8 @@
 | `exercise_extractor/utils.py` | 基础工具：页面转图像、文件 SHA256 哈希、markdown 块公式修复 |
 | `main.py`（仓库根） | 兼容入口 shim：`python main.py ...` 等价于 `python -m exercise_extractor ...` |
 | `pyproject.toml` | pip 打包配置（setuptools），console script `exercise-extractor` |
-| `test/smoke_test/` | 冒烟测试模块（82 项）：`common.py` 公共设施（断言计数/CLI 子进程/场景加载）、`scenarios.py` 场景测试与注册表、`unit.py` 单元断言、`runner.py` 入口；运行 `python -m test.smoke_test`。场景化测试文本统一放 `test_scenarios/*.txt`，每个场景一个 txt |
+| `start_minio.sh` | 启动本地 MinIO docker（S3 兼容 OSS 后端）：默认 http://127.0.0.1:9000，minioadmin/minioadmin，桶 exercises；环境变量可覆盖 |
+| `test/smoke_test/` | 冒烟测试模块（87 项）：`common.py` 公共设施（断言计数/CLI 子进程/场景加载）、`scenarios.py` 场景测试与注册表、`unit.py` 单元断言、`runner.py` 入口；运行 `python -m test.smoke_test`。场景化测试文本统一放 `test_scenarios/*.txt`，每个场景一个 txt |
 | `test_scenarios/` | 场景化测试文本：每个场景一个 txt（近真题/旧真题/解析/文末答案/表格答案区/伪造缓存页/习题集等），smoke_test 依次扫描并按文件名分发 |
 
 ## 主流程（main.py）
@@ -80,6 +82,7 @@ exampaper 分支不经过第 1/5 步：`build_sections` 直接返回整卷节点
 - **OCR 批大小**：PaddleOCR-VL genai 客户端默认 batch_size=8192（整批页面合成一批，`_doc_vlm_genai_collect_responses` 等整批完成才输出，导致结果到最后才一次性落盘）；`create_ocr_pipeline` 会把 `vl_rec_model.batch_sampler.batch_size` 强制改为 8，配合并发 8 实现按 8 个一批实时输出。
 - **批量 OCR 缺页兜底**：批量 `predict_iter` 正常返回但结果数少于请求页数时（静默截断，不抛异常），批量循环结束后按 `page.md` 是否存在逐个补齐缺失页；仍失败的单页走原有 FAILED 标记流程，不静默丢失。
 - **OCR 后端**：默认且推荐 `vllm-server`（`vl_rec_backend="vllm-server"`，引擎模型 `PaddleOCR-VL-1.6-0.9B`）。llama.cpp + GGUF（`PaddleOCR-VL-1.6-GGUF`）曾因 GGUF 参数/并行数与客户端不匹配出现偶发 FAILED 页，已弃用；`start_llamacpp.sh` 仅作历史参考。FAILED 重试与批量缺页兜底仍保留，防任何后端偶发失败。
+- **OSS/MinIO 图片上传**：`extract_exercise` 传 `oss_endpoint/oss_access_key/oss_secret_key/oss_bucket`（四个必填）即启用：提取完成前把 `<img src="本地路径">` 的图片上传到 OSS，src 替换为公开 URL（优先 `oss_public_base_url`，否则 `http(s)://endpoint/bucket/对象键`）；对象键 = `oss_prefix` + 相对 markdown 缓存根路径（`page_N/imgs/x.jpg`，避免跨页同名覆盖）。同一图片只上传一次（按本地路径缓存 URL）。流式与整树两条管线都生效；缺任一项必填配置则完全不碰网络。本地联调用 `start_minio.sh` 起 MinIO。
 
 ## 运行方式
 
@@ -148,6 +151,24 @@ CLI 的 OCR 引擎参数：`--vl_server_url`（旧名，兼容）、`--vl_rec_ba
 推理设备/引擎：`--ocr-device`/`--ocr-engine`（PaddleOCR-VL）、
 `--toc-device`/`--toc-engine`（toc_forge，如 engine="onnxruntime"
 使用模型目录下的 inference.onnx），默认 None 交给各库自行决定。
+OSS/MinIO：`--oss-endpoint`、`--oss-access-key`、`--oss-secret-key`、
+`--oss-bucket`（四个必填才启用）、`--oss-region`、`--oss-prefix`、
+`--oss-use-ssl`、`--oss-public-base-url`。
+
+## OSS 联调（本地 MinIO）
+
+```bash
+bash start_minio.sh   # 起 MinIO：http://127.0.0.1:9000，minioadmin/minioadmin，桶 exercises
+
+python -m exercise_extractor --input xxx.pdf --output output --doc_type exampaper \
+  --oss-endpoint 127.0.0.1:9000 \
+  --oss-access-key minioadmin --oss-secret-key minioadmin \
+  --oss-bucket exercises --oss-prefix papers
+```
+
+API 等价写法：`extract_exercise(..., oss_endpoint="127.0.0.1:9000",
+oss_access_key=..., oss_secret_key=..., oss_bucket="exercises",
+oss_prefix="papers")`。
 
 ## 当前状态
 

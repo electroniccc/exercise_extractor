@@ -109,6 +109,30 @@ def parse_args() -> argparse.Namespace:
         help="toc_forge 目录识别引擎（如 onnxruntime 使用 inference.onnx）",
     )
     parser.add_argument(
+        "--oss-endpoint",
+        type=str,
+        default=None,
+        help="OSS/MinIO 服务地址（如 127.0.0.1:9000）；缺任一项必填配置则不启用图片上传",
+    )
+    parser.add_argument("--oss-access-key", type=str, default=None, help="OSS Access Key")
+    parser.add_argument("--oss-secret-key", type=str, default=None, help="OSS Secret Key")
+    parser.add_argument("--oss-bucket", type=str, default=None, help="OSS 桶名")
+    parser.add_argument("--oss-region", type=str, default=None, help="OSS region（可选）")
+    parser.add_argument(
+        "--oss-prefix", type=str, default="", help="OSS 对象键前缀（可选，默认空）"
+    )
+    parser.add_argument(
+        "--oss-use-ssl",
+        action="store_true",
+        help="OSS 使用 https（MinIO 本地通常不开）",
+    )
+    parser.add_argument(
+        "--oss-public-base-url",
+        type=str,
+        default=None,
+        help="OSS 公开访问基础 URL（可选，默认 http(s)://endpoint/bucket）",
+    )
+    parser.add_argument(
         "--doc_type",
         type=str,
         default="textbook",

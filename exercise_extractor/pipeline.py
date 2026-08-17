@@ -8,6 +8,7 @@ from . import answers, exampaper, exercise_book
 from .extraction import combine_section_pages, extract_exercises
 from .html_tables import replace_html_tables
 from .ocr import build_sections, create_ocr_pipeline, ocr_pages
+from .oss import apply_oss_images, oss_config_from_args
 from .parse_md_exercises import normalize_section
 from .postprocess import print_summary, write_outputs
 from .utils import compute_file_hash
@@ -76,6 +77,12 @@ def run_pipeline(
     if args.doc_type != "exampaper":
         answers.extract_and_match(exercise_sections, markdown_path)
 
+    # OSS/MinIO：把结果里的本地图片上传，引用替换为 OSS URL
+    oss_cfg = oss_config_from_args(args)
+    if oss_cfg:
+        uploaded = apply_oss_images(exercise_sections, markdown_path, oss_cfg)
+        logger.info("OSS 图片上传完成: %d 张", uploaded)
+
     if write_outputs_enabled:
         if not args.output:
             raise ValueError("write_outputs=True 时需要提供 output_dir")
@@ -111,6 +118,8 @@ def iter_sections(
     )
     os.makedirs(markdown_path, exist_ok=True)
     pipeline = create_ocr_pipeline(args)
+    oss_cfg = oss_config_from_args(args)
+    oss_cache: dict = {}
 
     # 1) 答案节点先行：页数少，先 OCR + 按小标题切块，供逐节回填
     answer_nodes: list = []
@@ -156,6 +165,8 @@ def iter_sections(
         for node in nodes:
             node_path = f"{path} › {node['title']}" if path else node["title"]
             if node.get("is_answers"):
+                if oss_cfg:
+                    apply_oss_images([node], markdown_path, oss_cfg, oss_cache)
                 yield node
                 yield from walk(node.get("children", []), node_path)
                 continue
@@ -176,6 +187,8 @@ def iter_sections(
                     answers.match_section_answers(
                         answer_sections_all, targets, target_index, used_answer
                     )
+                if oss_cfg:
+                    apply_oss_images([node], markdown_path, oss_cfg, oss_cache)
                 yield node
             yield from walk(node.get("children", []), node_path)
 

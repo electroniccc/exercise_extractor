@@ -9,3 +9,4 @@ all_output
 output
 books.txt
 temp
+.minio-data

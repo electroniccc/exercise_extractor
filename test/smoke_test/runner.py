@@ -34,6 +34,7 @@ def main() -> None:
     unit.test_api_contract()
     unit.test_cli_engine_device_args()
     unit.test_match_section_answers()
+    unit.test_oss_image_upload()
     unit.test_cli()
     unit.test_full_cache_pipeline()
 

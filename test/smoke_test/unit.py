@@ -359,6 +359,61 @@ def test_match_section_answers() -> None:
     )
 
 
+def test_oss_image_upload() -> None:
+    """OSS 上传：缺配置不启用、本地图片上传并替换 URL、http 引用跳过。"""
+    from types import SimpleNamespace
+    from unittest import mock
+
+    from exercise_extractor.oss import (
+        OssConfig,
+        oss_config_from_args,
+        upload_images,
+    )
+
+    no_cfg = oss_config_from_args(
+        SimpleNamespace(
+            oss_endpoint=None,
+            oss_access_key=None,
+            oss_secret_key=None,
+            oss_bucket=None,
+        )
+    )
+    check("OSS 缺配置不启用", no_cfg is None)
+    cfg = oss_config_from_args(
+        SimpleNamespace(
+            oss_endpoint="127.0.0.1:9000",
+            oss_access_key="a",
+            oss_secret_key="s",
+            oss_bucket="b",
+            oss_region=None,
+            oss_prefix="imgs",
+            oss_use_ssl=False,
+            oss_public_base_url=None,
+        )
+    )
+    check("OSS 配置解析", cfg is not None and cfg.prefix == "imgs")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        img = os.path.join(tmp, "page_1", "imgs", "x.jpg")
+        os.makedirs(os.path.dirname(img))
+        with open(img, "wb") as f:
+            f.write(b"fake")
+        content = (
+            f'<div><img src="{img}" /></div>\n<img src="http://cdn/x.png" />'
+        )
+        with mock.patch("exercise_extractor.oss._minio_client") as m:
+            client = m.return_value
+            client.bucket_exists.return_value = True
+            new_content, uploaded = upload_images(content, tmp, cfg)
+        check(
+            "OSS 上传并替换 URL",
+            uploaded == 1
+            and "http://127.0.0.1:9000/b/imgs/page_1/imgs/x.jpg" in new_content
+            and 'src="http://cdn/x.png"' in new_content,
+            new_content,
+        )
+
+
 def test_cli() -> None:
     r = run_cli(["--hash", "--input", "/nonexistent.pdf"])
     check(
