@@ -12,7 +12,9 @@ from typing import Optional
 from .pipeline import run_pipeline
 
 DEFAULT_VL_SERVER_URL = "http://localhost:8080/v1"
-DEFAULT_VL_MODEL = "PaddleOCR-VL-1.6-GGUF"
+DEFAULT_VL_REC_BACKEND = "vllm-server"
+DEFAULT_VL_REC_MAX_CONCURRENCY = 4
+DEFAULT_VL_REC_API_MODEL_NAME = "PaddleOCR-VL-1.6-0.9B"
 
 # 当前支持的输入类型；后续扩展 image / markdown
 SUPPORTED_SOURCE_TYPES = ("pdf",)
@@ -36,8 +38,12 @@ def extract_exercise(
     output_dir: Optional[str] = None,
     ocr_cache: str = ".ocr_cache",
     model_dir: Optional[str] = None,
-    vl_server_url: str = DEFAULT_VL_SERVER_URL,
-    vl_model: str = DEFAULT_VL_MODEL,
+    vl_rec_backend: str = DEFAULT_VL_REC_BACKEND,
+    vl_rec_server_url: str = DEFAULT_VL_SERVER_URL,
+    vl_rec_max_concurrency: int = DEFAULT_VL_REC_MAX_CONCURRENCY,
+    vl_rec_api_model_name: str = DEFAULT_VL_REC_API_MODEL_NAME,
+    vl_server_url: Optional[str] = None,
+    vl_model: Optional[str] = None,
     write_outputs: bool = False,
 ) -> list:
     """提取 PDF 中的习题，返回 JSON 兼容的节点树。
@@ -47,6 +53,9 @@ def extract_exercise(
     doc_type：textbook / exercise_book / exampaper。
     model_dir：模型目录；为 None 时读环境变量
     EXERCISE_EXTRACTOR_MODEL_DIR（toc_forge 需要显式模型目录）。
+    vl_rec_*：PaddleOCR-VL 引擎初始化参数（backend / server_url /
+    并发数 / 引擎模型名）；vl_server_url、vl_model 为旧参数名的兼容别名，
+    传入时覆盖对应的 vl_rec_* 配置。
     write_outputs=True 时必须同时给 output_dir，会额外写出
     md / exercises.json / report.json；默认只返回数据不落盘。
     """
@@ -64,12 +73,20 @@ def extract_exercise(
         raise ValueError(
             "需要提供 model_dir，或设置环境变量 EXERCISE_EXTRACTOR_MODEL_DIR"
         )
+    if vl_server_url is not None:
+        vl_rec_server_url = vl_server_url
+    # vl_model 只控制输出后处理（含 "PaddleOCR" 时启用块公式修复），
+    # 没显式给就用引擎模型名兜底
+    vl_model = vl_model or vl_rec_api_model_name
     args = SimpleNamespace(
         input=source,
         output=output_dir,
         ocr_cache=ocr_cache,
         model_dir=model_dir,
-        vl_server_url=vl_server_url,
+        vl_rec_backend=vl_rec_backend,
+        vl_rec_server_url=vl_rec_server_url,
+        vl_rec_max_concurrency=vl_rec_max_concurrency,
+        vl_rec_api_model_name=vl_rec_api_model_name,
         vl_model=vl_model,
         doc_type=doc_type,
     )

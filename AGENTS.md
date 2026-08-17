@@ -8,7 +8,7 @@
 |---|---|
 | `exercise_extractor/main.py` | 主入口与 CLI（argparse）：解析参数后走 pipeline，安装后可用 `python -m exercise_extractor` 调用 |
 | `exercise_extractor/pipeline.py` | 可复用提取管线 `run_pipeline`（CLI 与对外 API 共用）：目录识别 → OCR → 拼页 → 切分 → 答案匹配 → 导出 |
-| `exercise_extractor/api.py` | 对外公共 API `extract_exercise(source, source_type="pdf", doc_type, ...)`：输入 PDF 路径，返回习题 JSON（与 exercises.json 同结构）；预留 source_type 扩展 image/markdown |
+| `exercise_extractor/api.py` | 对外公共 API `extract_exercise(source, source_type="pdf", doc_type, ...)`：输入 PDF 路径，返回习题 JSON（与 exercises.json 同结构）；OCR 引擎参数（vl_rec_backend/vl_rec_server_url/vl_rec_max_concurrency/vl_rec_api_model_name）全部可配；预留 source_type 扩展 image/markdown |
 | `exercise_extractor/__main__.py` | `python -m exercise_extractor` 调试入口（等价于仓库根 `python main.py`） |
 | `exercise_extractor/ocr.py` | 目录识别（build_sections，toc_forge + 阿里云 vLLM）与 OCR（ocr_pages，PaddleOCR-VL） |
 | `exercise_extractor/extraction.py` | 提取链：目录树 → 习题区域（build_section_tree）、待 OCR 页码、拼页、规则切分（extract_exercises）；后续 LLM 检查/审核在此插入 |
@@ -104,6 +104,10 @@ data = extract_exercise(
     doc_type="exercise_book",
     output_dir=None,
     model_dir="/path/to/paddle/official_models",
+    vl_rec_backend="vllm-server",
+    vl_rec_server_url="http://localhost:8080/v1",
+    vl_rec_max_concurrency=4,
+    vl_rec_api_model_name="PaddleOCR-VL-1.6-0.9B",
 )
 ```
 
@@ -112,8 +116,9 @@ data = extract_exercise(
 server（默认 `http://localhost:8080/v1`），`toc_forge` 为本地依赖，
 安装时若 pip 找不到可先 `--no-deps` 再用已有环境。`model_dir` 不内置机器
 路径：显式传入，或设置环境变量 `EXERCISE_EXTRACTOR_MODEL_DIR`。旧接口名
-`extract_pdf` 保留为别名（后续移除）。`source_type` 当前仅支持 `"pdf"`，
-后续扩展图片/markdown 时在 `api.SUPPORTED_SOURCE_TYPES` 与分发逻辑中增加。
+`extract_pdf` 保留为别名（后续移除）；`vl_server_url`/`vl_model` 为 OCR
+参数的旧别名（后续移除）。`source_type` 当前仅支持 `"pdf"`，后续扩展
+图片/markdown 时在 `api.SUPPORTED_SOURCE_TYPES` 与分发逻辑中增加。
 
 依赖：`pymupdf`、`toc_forge`、`paddleocr`（PaddleOCRVL）、`cv2`、`numpy`、`Pillow`。目录识别需要 `ALIYUN_API_KEY` 环境变量；OCR 需要本地 llama.cpp server（默认 8080）。
 
@@ -133,6 +138,10 @@ SMOKE_TEST_FULL_PIPELINE_DOC_TYPE=exampaper SMOKE_TEST_FULL_PIPELINE_PDF=... pyt
 `test_scenarios/*.txt` 依次加载分发，单元断言在 `unit.py`，公共设施在
 `common.py`，入口在 `runner.py`。测试不绑定当前机器：CLI 子进程用
 `sys.executable`，全缓存管线默认跳过（环境变量启用），场景文本全部自包含。
+
+CLI 的 OCR 引擎参数：`--vl_server_url`（旧名，兼容）、`--vl_rec_backend`、
+`--vl_rec_max_concurrency`、`--vl_rec_api_model_name`；
+`--vl_model` 只控制输出后处理（含 PaddleOCR 时启用块公式修复）。
 
 ## 当前状态
 

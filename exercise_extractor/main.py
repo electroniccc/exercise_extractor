@@ -63,7 +63,26 @@ def parse_args() -> argparse.Namespace:
         "--vl_model",
         type=str,
         default="PaddleOCR-VL-1.6-GGUF",
-        help="VL 模型名（备选: ATH-MaaS/OvisOCR2, PaddleOCR-VL-1.6-0.9B）",
+        help="输出后处理用模型名（含 PaddleOCR 时启用块公式修复；"
+        "引擎模型名用 --vl_rec_api_model_name 指定）",
+    )
+    parser.add_argument(
+        "--vl_rec_backend",
+        type=str,
+        default="vllm-server",
+        help="VL OCR 引擎后端 (default: vllm-server)",
+    )
+    parser.add_argument(
+        "--vl_rec_max_concurrency",
+        type=int,
+        default=4,
+        help="VL OCR 最大并发数，需与服务端并行数一致 (default: 4)",
+    )
+    parser.add_argument(
+        "--vl_rec_api_model_name",
+        type=str,
+        default="PaddleOCR-VL-1.6-0.9B",
+        help="VL OCR 引擎模型名 (default: PaddleOCR-VL-1.6-0.9B)",
     )
     parser.add_argument(
         "--doc_type",
@@ -77,7 +96,10 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="只计算并打印输入文件的缓存 hash，然后退出（不跑目录识别/OCR）",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    # --vl_server_url 是旧参数名，引擎统一走 vl_rec_server_url
+    args.vl_rec_server_url = args.vl_server_url
+    return args
 
 
 def main() -> None:

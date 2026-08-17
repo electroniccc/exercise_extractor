@@ -73,17 +73,19 @@ def create_ocr_pipeline(args: argparse.Namespace) -> PaddleOCRVL:
     构造只做配置校验，不连接服务；真正的推理在 ocr_pages 里。
     PaddleOCR-VL 的 genai 客户端默认把批大小设为 8192（整批页面合成一批），
     结果收集要等整批全部完成才输出；这里改为 8，让 predict_iter 按
-    8 个一批实时产出（并发 vl_rec_max_concurrency=4，需与 llama.cpp 服务端
-    并行数一致，否则并发过高会导致服务端 OOM/500）。
+    8 个一批实时产出。引擎参数（backend/server_url/并发数/模型名）由调用方
+    通过 args 传入，CLI 与对外 API 共用同一套配置。
     """
     pipeline = PaddleOCRVL(
         pipeline_version="v1.6",
-        # vl_rec_backend="llama-cpp-server",
-        vl_rec_backend="vllm-server",
-        vl_rec_server_url=args.vl_server_url,
-        vl_rec_max_concurrency=4,
-        # vl_rec_api_model_name=args.vl_model,
-        vl_rec_api_model_name="PaddleOCR-VL-1.6-0.9B"
+        vl_rec_backend=getattr(args, "vl_rec_backend", "vllm-server"),
+        vl_rec_server_url=getattr(
+            args, "vl_rec_server_url", getattr(args, "vl_server_url", None)
+        ),
+        vl_rec_max_concurrency=getattr(args, "vl_rec_max_concurrency", 4),
+        vl_rec_api_model_name=getattr(
+            args, "vl_rec_api_model_name", "PaddleOCR-VL-1.6-0.9B"
+        ),
     )
     try:
         pipeline.paddlex_pipeline.vl_rec_model.batch_sampler.batch_size = 8
