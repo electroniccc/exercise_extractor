@@ -1,15 +1,17 @@
 """对外公共 API：输入文件路径，返回提取到的习题 JSON。
 
 返回结构与 exercises.json 一致（SectionNode 列表）。OCR 需要本地
-llama.cpp server（默认 http://localhost:8080/v1）。当前支持 PDF，
+vllm-server（默认 http://localhost:8080/v1；llama.cpp+GGUF 已弃用）。
+当前支持 PDF，
 后续计划支持 image / markdown 等输入。
 """
 
 import os
+from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Optional
 
-from .pipeline import run_pipeline
+from .pipeline import iter_sections
 
 DEFAULT_VL_SERVER_URL = "http://localhost:8080/v1"
 DEFAULT_VL_REC_BACKEND = "vllm-server"
@@ -45,8 +47,8 @@ def extract_exercise(
     vl_server_url: Optional[str] = None,
     vl_model: Optional[str] = None,
     write_outputs: bool = False,
-) -> list:
-    """提取 PDF 中的习题，返回 JSON 兼容的节点树。
+) -> Iterator[dict]:
+    """提取 PDF 中的习题，返回按节流式产出的迭代器。
 
     source：输入文件路径（当前仅支持 PDF）。
     source_type：输入类型，当前仅 "pdf"；后续支持 "image"/"markdown"。
@@ -58,6 +60,10 @@ def extract_exercise(
     传入时覆盖对应的 vl_rec_* 配置。
     write_outputs=True 时必须同时给 output_dir，会额外写出
     md / exercises.json / report.json；默认只返回数据不落盘。
+
+    返回迭代器：每完成一个习题章节就 yield 一个 SectionNode（与
+    exercises.json 中节点同结构），课本/习题集章节多时不用等整本 OCR
+    结束。参数校验（文件存在、source_type、model_dir）在调用时立即执行。
     """
     if source_type not in SUPPORTED_SOURCE_TYPES:
         raise NotImplementedError(
@@ -90,9 +96,7 @@ def extract_exercise(
         vl_model=vl_model,
         doc_type=doc_type,
     )
-    return run_pipeline(
-        args, write_outputs_enabled=write_outputs, print_summary_enabled=False
-    )
+    return iter_sections(args, write_outputs_enabled=write_outputs)
 
 
 # 兼容旧名（v0.1.0 早期接口），后续可移除

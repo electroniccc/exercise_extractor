@@ -234,6 +234,75 @@ def test_exampaper_build_node() -> None:
     )
 
 
+def test_api_contract() -> None:
+    """extract_exercise 返回迭代器，且入参校验在调用时立即执行。"""
+    from exercise_extractor.api import extract_exercise
+
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+        f.write(b"%PDF-1.4 fake minimal")
+        pdf = f.name
+    try:
+        gen = extract_exercise(pdf, model_dir="/tmp/models")
+        check(
+            "extract_exercise 返回迭代器",
+            hasattr(gen, "__next__"),
+            type(gen).__name__,
+        )
+        gen.close()
+    finally:
+        os.unlink(pdf)
+    try:
+        extract_exercise("/nonexistent.pdf", model_dir="/tmp/models")
+        check("extract_exercise 入参校验即时抛错", False)
+    except FileNotFoundError:
+        check("extract_exercise 入参校验即时抛错", True)
+
+
+def test_match_section_answers() -> None:
+    """流式逐节答案匹配：区间答案展开、题数校验、used 去重。"""
+    from exercise_extractor import answers
+
+    secs = [
+        {
+            "title": "第1章 习题",
+            "has_exercise": True,
+            "children": [],
+            "exercises": [
+                {
+                    "number": str(i),
+                    "content": f"题{i}",
+                    "answer": "",
+                    "solution_steps": "",
+                }
+                for i in range(1, 6)
+            ],
+        }
+    ]
+    answer_sections = [
+        {
+            "title": "第1章",
+            "answers": [
+                {"number": str(i), "content": f"答{i}", "separator": "."}
+                for i in (1, 2, 3)
+            ]
+            + [{"number": "4-5", "content": "答四五", "separator": "."}],
+        }
+    ]
+    targets = answers.collect_exercise_targets(secs)
+    used: set[int] = set()
+    answers.match_section_answers(answer_sections, targets, 0, used)
+    exs = secs[0]["exercises"]
+    check(
+        "逐节答案匹配+填充",
+        all(exs[i]["answer"] == f"答{i + 1}" for i in range(3))
+        and exs[3]["answer"] == "答四五"
+        and exs[4]["answer"] == "答四五"
+        and answer_sections[0].get("count_match") is True
+        and used == {0},
+        str([e.get("answer") for e in exs]),
+    )
+
+
 def test_cli() -> None:
     r = run_cli(["--hash", "--input", "/nonexistent.pdf"])
     check(

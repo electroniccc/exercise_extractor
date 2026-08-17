@@ -2,7 +2,7 @@
 
 - build_sections：跑 toc_forge 目录识别（阿里云 vLLM 视觉 API）得到目录树，
   经 build_section_tree 筛出习题区域；
-- create_ocr_pipeline / ocr_pages：用 PaddleOCR-VL（llama.cpp server）对
+- create_ocr_pipeline / ocr_pages：用 PaddleOCR-VL（vllm-server）对
   未缓存的习题页做 OCR，结果按 PDF 哈希缓存（page_N/page.md）。
 """
 

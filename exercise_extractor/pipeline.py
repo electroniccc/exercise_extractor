@@ -6,7 +6,9 @@ import os
 
 from . import answers, exampaper, exercise_book
 from .extraction import combine_section_pages, extract_exercises
+from .html_tables import replace_html_tables
 from .ocr import build_sections, create_ocr_pipeline, ocr_pages
+from .parse_md_exercises import normalize_section
 from .postprocess import print_summary, write_outputs
 from .utils import compute_file_hash
 
@@ -82,3 +84,110 @@ def run_pipeline(
             print_summary(report)
             print(f"输出目录: {os.path.abspath(args.output)}")
     return exercise_sections
+
+
+def iter_sections(
+    args: argparse.Namespace,
+    write_outputs_enabled: bool = False,
+):
+    """流式提取：每完成一个习题章节就 yield 一个 SectionNode。
+
+    课本/习题集章节多、整本 OCR 慢，按节处理可以让第一个章节完成后立即
+    返回给调用方。答案节点页数少，先 OCR + 按小标题切块，随后逐节回填
+    答案，保证流式返回的每个节点同样带 answer/solution_steps。
+    CLI（run_pipeline）保持整树一次处理；对外 API 用本生成器。
+    """
+    if write_outputs_enabled:
+        if not args.output:
+            raise ValueError("write_outputs=True 时需要提供 output_dir")
+        ensure_output_dir_empty(args.output)
+        os.makedirs(args.output, exist_ok=True)
+
+    exercise_sections = build_sections(args)
+    file_hash = compute_file_hash(args.input)
+    logger.info("filename: %s, hash: %s", os.path.basename(args.input), file_hash)
+    markdown_path = os.path.join(
+        args.ocr_cache, "exercise_extractor", file_hash, "markdown"
+    )
+    os.makedirs(markdown_path, exist_ok=True)
+    pipeline = create_ocr_pipeline(args)
+
+    # 1) 答案节点先行：页数少，先 OCR + 按小标题切块，供逐节回填
+    answer_nodes: list = []
+
+    def collect_answer_nodes(nodes: list) -> None:
+        for n in nodes:
+            if n.get("is_answers"):
+                answer_nodes.append(n)
+            collect_answer_nodes(n.get("children", []))
+
+    collect_answer_nodes(exercise_sections)
+    answer_sections_all: list = []
+    for node in answer_nodes:
+        ocr_pages(args, [node], markdown_path, pipeline)
+        combine_section_pages([node], markdown_path)
+        secs = answers.split_answer_sections(node.get("exercise_content", ""))
+        for sec in secs:
+            for item in sec.get("answers", []):
+                for field in ("content", "solution_steps", "answer"):
+                    text = item.get(field)
+                    if text:
+                        new_text = replace_html_tables(text)
+                        if new_text != text:
+                            item[field] = new_text
+        node["answer_sections"] = secs
+        answer_sections_all.extend(secs)
+
+    # 2) 预计算全树 targets 与已知小节名，保证与整树一次提取行为一致
+    targets = answers.collect_exercise_targets(exercise_sections)
+    used_answer: set[int] = set()
+    known_sections: set[str] = set()
+
+    def collect_titles(nodes: list) -> None:
+        for n in nodes:
+            if n.get("title"):
+                known_sections.add(normalize_section(n["title"]))
+            collect_titles(n.get("children", []))
+
+    collect_titles(exercise_sections)
+
+    # 3) 按树序逐节 OCR → 拼页 → 切分 → 回填答案 → yield
+    def walk(nodes: list, path: str):
+        for node in nodes:
+            node_path = f"{path} › {node['title']}" if path else node["title"]
+            if node.get("is_answers"):
+                yield node
+                yield from walk(node.get("children", []), node_path)
+                continue
+            if node.get("has_exercise"):
+                ocr_pages(args, [node], markdown_path, pipeline)
+                combine_section_pages([node], markdown_path)
+                if args.doc_type == "exercise_book":
+                    exercise_book.extract_exercises([node])
+                elif args.doc_type == "exampaper":
+                    exampaper.extract_exercises([node])
+                else:
+                    extract_exercises([node], known_sections=known_sections)
+                target_index = next(
+                    (j for j, t in enumerate(targets) if t["node"] is node),
+                    None,
+                )
+                if target_index is not None:
+                    answers.match_section_answers(
+                        answer_sections_all, targets, target_index, used_answer
+                    )
+                yield node
+            yield from walk(node.get("children", []), node_path)
+
+    for section_node in exercise_sections:
+        yield from walk([section_node], section_node["title"])
+
+    # 4) 流式结束：清理临时挂载，按需落盘
+    def cleanup(nodes: list) -> None:
+        for n in nodes:
+            n.pop("answer_section", None)
+            cleanup(n.get("children", []))
+
+    cleanup(exercise_sections)
+    if write_outputs_enabled:
+        write_outputs(exercise_sections, args.output, markdown_path)

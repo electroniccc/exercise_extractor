@@ -31,6 +31,8 @@ def main() -> None:
     unit.test_html_tables()
     unit.test_exercise_book_sections()
     unit.test_exampaper_build_node()
+    unit.test_api_contract()
+    unit.test_match_section_answers()
     unit.test_cli()
     unit.test_full_cache_pipeline()
 

@@ -7,8 +7,8 @@
 | 文件 | 职责 |
 |---|---|
 | `exercise_extractor/main.py` | 主入口与 CLI（argparse）：解析参数后走 pipeline，安装后可用 `python -m exercise_extractor` 调用 |
-| `exercise_extractor/pipeline.py` | 可复用提取管线 `run_pipeline`（CLI 与对外 API 共用）：目录识别 → OCR → 拼页 → 切分 → 答案匹配 → 导出 |
-| `exercise_extractor/api.py` | 对外公共 API `extract_exercise(source, source_type="pdf", doc_type, ...)`：输入 PDF 路径，返回习题 JSON（与 exercises.json 同结构）；OCR 引擎参数（vl_rec_backend/vl_rec_server_url/vl_rec_max_concurrency/vl_rec_api_model_name）全部可配；预留 source_type 扩展 image/markdown |
+| `exercise_extractor/pipeline.py` | 可复用提取管线：`run_pipeline` 整树一次处理（CLI 用）、`iter_sections` 流式逐节处理（对外 API 用）：答案节点先 OCR 切块，再按树序逐节 OCR → 拼页 → 切分 → 回填答案 → yield |
+| `exercise_extractor/api.py` | 对外公共 API `extract_exercise(source, source_type="pdf", doc_type, ...)`：输入 PDF 路径，返回**按节流式产出**的迭代器（每完成一个 section 就 yield 一个，与 exercises.json 节点同结构）；OCR 引擎参数（vl_rec_backend/vl_rec_server_url/vl_rec_max_concurrency/vl_rec_api_model_name）全部可配；预留 source_type 扩展 image/markdown |
 | `exercise_extractor/__main__.py` | `python -m exercise_extractor` 调试入口（等价于仓库根 `python main.py`） |
 | `exercise_extractor/ocr.py` | 目录识别（build_sections，toc_forge + 阿里云 vLLM）与 OCR（ocr_pages，PaddleOCR-VL） |
 | `exercise_extractor/extraction.py` | 提取链：目录树 → 习题区域（build_section_tree）、待 OCR 页码、拼页、规则切分（extract_exercises）；后续 LLM 检查/审核在此插入 |
@@ -22,13 +22,13 @@
 | `exercise_extractor/utils.py` | 基础工具：页面转图像、文件 SHA256 哈希、markdown 块公式修复 |
 | `main.py`（仓库根） | 兼容入口 shim：`python main.py ...` 等价于 `python -m exercise_extractor ...` |
 | `pyproject.toml` | pip 打包配置（setuptools），console script `exercise-extractor` |
-| `test/smoke_test/` | 冒烟测试模块（81 项）：`common.py` 公共设施（断言计数/CLI 子进程/场景加载）、`scenarios.py` 场景测试与注册表、`unit.py` 单元断言、`runner.py` 入口；运行 `python -m test.smoke_test`。场景化测试文本统一放 `test_scenarios/*.txt`，每个场景一个 txt |
+| `test/smoke_test/` | 冒烟测试模块（82 项）：`common.py` 公共设施（断言计数/CLI 子进程/场景加载）、`scenarios.py` 场景测试与注册表、`unit.py` 单元断言、`runner.py` 入口；运行 `python -m test.smoke_test`。场景化测试文本统一放 `test_scenarios/*.txt`，每个场景一个 txt |
 | `test_scenarios/` | 场景化测试文本：每个场景一个 txt（近真题/旧真题/解析/文末答案/表格答案区/伪造缓存页/习题集等），smoke_test 依次扫描并按文件名分发 |
 
 ## 主流程（main.py）
 
 1. **build_sections**（ocr.py）：`toc_forge.bookmark_pdf` 做目录识别（阿里云 vLLM 视觉 API，模型 `qwen3.7-flash`，API key 取环境变量 `ALIYUN_API_KEY`），得到目录树后经 `build_section_tree` 筛出习题章节，每节带 `exercise_page_range: [start, end)`。
-2. **ocr_pages**（ocr.py）：对未缓存的习题页转图像，交给 PaddleOCR-VL（llama.cpp server，默认 `http://localhost:8080/v1`）转 markdown，按 PDF 哈希分目录缓存（`page_N/page.md`）；已有缓存自动跳过。
+2. **ocr_pages**（ocr.py）：对未缓存的习题页转图像，交给 PaddleOCR-VL（vllm-server，默认 `http://localhost:8080/v1`）转 markdown，按 PDF 哈希分目录缓存（`page_N/page.md`）；已有缓存自动跳过。
 3. **combine_section_pages**（extraction.py）：把每节若干页 markdown 拼接，页间插入 `<!-- page: N -->` 标记供页码溯源。
 4. **extract_exercises**（extraction.py）：切分、按小节过滤、处理隐式节尾习题、题号重排为 1,2,3…（原题号保留在 `original_number`）。
 5. **answers.extract_and_match**：对 `is_answers` 节点拼页、按小标题切块、与习题节点匹配并校验题数，结果写入 `node["answer_sections"]`。
@@ -79,6 +79,7 @@ exampaper 分支不经过第 1/5 步：`build_sections` 直接返回整卷节点
 - **doc_type**：`textbook` 启用节尾搜索；`exercise_book` 走 `exercise_book.py` 专用流程（有目录：目录树叶子小节整体作为习题区域、不做小节归属过滤，起始页用 `truncate_from_page_heading` 兜底——目录标题可能比页内标题多前缀，如目录"习题 1-2 数列的极限" vs 页内"## 数列的极限"；无目录：整本 OCR 后按小标题层级切块再按题号提取）；`exampaper` 走 `exampaper.py` 专用流程（整卷 OCR + 题型小节切分，跳过 toc_forge 与通用答案章节匹配）。
 - **OCR 批大小**：PaddleOCR-VL genai 客户端默认 batch_size=8192（整批页面合成一批，`_doc_vlm_genai_collect_responses` 等整批完成才输出，导致结果到最后才一次性落盘）；`create_ocr_pipeline` 会把 `vl_rec_model.batch_sampler.batch_size` 强制改为 8，配合并发 8 实现按 8 个一批实时输出。
 - **批量 OCR 缺页兜底**：批量 `predict_iter` 正常返回但结果数少于请求页数时（静默截断，不抛异常），批量循环结束后按 `page.md` 是否存在逐个补齐缺失页；仍失败的单页走原有 FAILED 标记流程，不静默丢失。
+- **OCR 后端**：默认且推荐 `vllm-server`（`vl_rec_backend="vllm-server"`，引擎模型 `PaddleOCR-VL-1.6-0.9B`）。llama.cpp + GGUF（`PaddleOCR-VL-1.6-GGUF`）曾因 GGUF 参数/并行数与客户端不匹配出现偶发 FAILED 页，已弃用；`start_llamacpp.sh` 仅作历史参考。FAILED 重试与批量缺页兜底仍保留，防任何后端偶发失败。
 
 ## 运行方式
 
@@ -96,9 +97,9 @@ python main.py --input temp/xxx.pdf --output output --doc_type textbook
 python -m exercise_extractor --input xxx.pdf --output output --doc_type textbook
 exercise-extractor --input xxx.pdf --output output --doc_type exampaper
 
-# 公共 API：输入 PDF，返回习题 JSON（与 exercises.json 同结构）
+# 公共 API：输入 PDF，按节流式返回习题（每完成一个 section 即 yield）
 from exercise_extractor import extract_exercise
-data = extract_exercise(
+for section in extract_exercise(
     "xxx.pdf",
     source_type="pdf",
     doc_type="exercise_book",
@@ -108,19 +109,21 @@ data = extract_exercise(
     vl_rec_server_url="http://localhost:8080/v1",
     vl_rec_max_concurrency=4,
     vl_rec_api_model_name="PaddleOCR-VL-1.6-0.9B",
-)
+):
+    print(section["title"], len(section["exercises"]), "题")
 ```
 
-`extract_exercise` 默认只返回数据不落盘；`write_outputs=True` 且给 `output_dir`
-时会额外写出 md / exercises.json / report.json。OCR 需要本地 llama.cpp
-server（默认 `http://localhost:8080/v1`），`toc_forge` 为本地依赖，
+`extract_exercise` 默认只返回数据不落盘（迭代器，可提前中断）；
+`write_outputs=True` 且给 `output_dir`
+时会额外写出 md / exercises.json / report.json。OCR 需要本地 vllm-server
+（默认 `http://localhost:8080/v1`；llama.cpp+GGUF 已弃用，见“OCR 后端”），`toc_forge` 为本地依赖，
 安装时若 pip 找不到可先 `--no-deps` 再用已有环境。`model_dir` 不内置机器
 路径：显式传入，或设置环境变量 `EXERCISE_EXTRACTOR_MODEL_DIR`。旧接口名
 `extract_pdf` 保留为别名（后续移除）；`vl_server_url`/`vl_model` 为 OCR
 参数的旧别名（后续移除）。`source_type` 当前仅支持 `"pdf"`，后续扩展
 图片/markdown 时在 `api.SUPPORTED_SOURCE_TYPES` 与分发逻辑中增加。
 
-依赖：`pymupdf`、`toc_forge`、`paddleocr`（PaddleOCRVL）、`cv2`、`numpy`、`Pillow`。目录识别需要 `ALIYUN_API_KEY` 环境变量；OCR 需要本地 llama.cpp server（默认 8080）。
+依赖：`pymupdf`、`toc_forge`、`paddleocr`（PaddleOCRVL）、`cv2`、`numpy`、`Pillow`。目录识别需要 `ALIYUN_API_KEY` 环境变量；OCR 需要本地 vllm-server（默认 8080）。
 
 ## 测试
 

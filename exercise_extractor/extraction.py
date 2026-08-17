@@ -436,7 +436,10 @@ def combine_section_pages(
         walk(section_node)
 
 
-def extract_exercises(sections: list[SectionNode]) -> None:
+def extract_exercises(
+    sections: list[SectionNode],
+    known_sections: set[str] | None = None,
+) -> None:
     """对每个习题章节执行切分，结果写入 node["exercises"]。
 
     相邻小节的页码范围可能重叠（如“习题1-10”与“总习题一”都从第 85 页开始），
@@ -447,20 +450,24 @@ def extract_exercises(sections: list[SectionNode]) -> None:
     隐式节尾习题节点（implicit）若没提取到任何习题（如介绍性内容、纯参考页），
     直接从树中移除，不进入输出。
 
+    known_sections：预计算的“树中所有小节名”集合（流式提取时传入，
+    保证隐式节点过滤行为与整树一次提取一致）；不传则从 sections 自行收集。
+
     后续接入 LLM 检查/审核时，可在此函数内（或其后）对 node["exercises"]
     做二次校验过滤。
     """
     # 树中所有已知小节名（归一化）：用于剔除隐式节点里串入的“下一节”编号内容
-    known_sections: set[str] = set()
+    if known_sections is None:
+        known_sections = set()
 
-    def collect_titles(node: SectionNode) -> None:
-        if node.get("title"):
-            known_sections.add(normalize_section(node["title"]))
-        for child_node in node.get("children", []):
-            collect_titles(child_node)
+        def collect_titles(node: SectionNode) -> None:
+            if node.get("title"):
+                known_sections.add(normalize_section(node["title"]))
+            for child_node in node.get("children", []):
+                collect_titles(child_node)
 
-    for section_node in sections:
-        collect_titles(section_node)
+        for section_node in sections:
+            collect_titles(section_node)
 
     def walk(
         node: SectionNode, parent_title: str | None = None

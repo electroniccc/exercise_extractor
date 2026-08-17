@@ -316,6 +316,67 @@ def _effective_answer_count(answer_items: list[Exercise]) -> int:
     return total
 
 
+def collect_exercise_targets(sections) -> list[dict]:
+    """按目录顺序收集所有已提取习题的节点（含隐式节尾节点）。
+
+    流式场景用：预计算全树 targets（带 path），逐节匹配答案块。
+    """
+    return _collect_exercise_targets(sections)
+
+
+def match_section_answers(
+    answer_sections: list[AnswerSection],
+    targets: list[dict],
+    target_index: int,
+    used: set[int],
+) -> None:
+    """把最早的可用答案块匹配给第 target_index 个习题节点并逐题填充。
+
+    流式提取时按树序逐节调用；分配逻辑与 match_answer_sections 等价：
+    答案块按目录顺序取第一个“未使用且章号相同”的节点；章级答案块
+    优先显式习题节点，隐式节尾节点只作兜底；标题归一化再兜底。
+    """
+    target = targets[target_index]
+    chosen: tuple[int, AnswerSection] | None = None
+    for i, sec in enumerate(answer_sections):
+        if i in used:
+            continue
+        chapter = extract_chapter_number(sec["title"])
+        # 章级答案块：当前是隐式节尾节点且同章还有显式节点时跳过
+        if (
+            "章" in (sec["title"] or "")
+            and target["implicit"]
+            and any(
+                t["chapter"] == target["chapter"] and not t["implicit"]
+                for t in targets
+            )
+        ):
+            continue
+        if chapter is not None and target["chapter"] == chapter:
+            chosen = (i, sec)
+            break
+        # 标题归一化兜底
+        sec_norm = normalize_section(sec["title"])
+        t_title = normalize_section(target["title"])
+        t_path = normalize_section(target["path"])
+        if sec_norm and (
+            sec_norm == t_title or sec_norm in t_path or t_title in sec_norm
+        ):
+            chosen = (i, sec)
+            break
+    if chosen is None:
+        return
+    i, sec = chosen
+    used.add(i)
+    sec["matched_title"] = target["title"]
+    sec["matched_path"] = target["path"]
+    sec["matched_count"] = target["count"]
+    sec["count_match"] = _effective_answer_count(sec["answers"]) == target["count"]
+    # 临时挂载到习题节点，供 fill_exercise_answers 逐题填充
+    target["node"]["answer_section"] = sec
+    fill_exercise_answers([target["node"]])
+
+
 def _combine_pages(page_range: list[int], markdown_path: str) -> str:
     """拼接答案章节各页 markdown（页间插入页码标记）。"""
     content = ""
