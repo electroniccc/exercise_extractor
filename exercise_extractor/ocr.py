@@ -42,6 +42,11 @@ def build_sections(args: argparse.Namespace) -> list[SectionNode]:
         doc.close()
         title = os.path.splitext(os.path.basename(args.input))[0]
         return exampaper.build_exampaper_sections(title, doc_page_count)
+    toc_engine_kwargs = {}
+    if getattr(args, "toc_device", None):
+        toc_engine_kwargs["device"] = args.toc_device
+    if getattr(args, "toc_engine", None):
+        toc_engine_kwargs["engine"] = args.toc_engine
     # 目录识别改用阿里云 vLLM API（视觉模型直接读目录页图片）；
     # API key 取环境变量 ALIYUN_API_KEY，模型名要与部署的模型一致
     if not os.environ.get("ALIYUN_API_KEY"):
@@ -55,6 +60,7 @@ def build_sections(args: argparse.Namespace) -> list[SectionNode]:
         api_base_url=ALIYUN_BASE_URL,
         api_key=os.environ.get("ALIYUN_API_KEY"),
         vllm_name=VLLM_NAME,
+        **toc_engine_kwargs,
     )
     # 文档总页数：习题答案节点没有 boundary 时用它收尾
     doc = pymupdf.open(args.input)
@@ -76,6 +82,11 @@ def create_ocr_pipeline(args: argparse.Namespace) -> PaddleOCRVL:
     8 个一批实时产出。引擎参数（backend/server_url/并发数/模型名）由调用方
     通过 args 传入，CLI 与对外 API 共用同一套配置。
     """
+    ocr_engine_kwargs = {}
+    if getattr(args, "ocr_device", None):
+        ocr_engine_kwargs["device"] = args.ocr_device
+    if getattr(args, "ocr_engine", None):
+        ocr_engine_kwargs["engine"] = args.ocr_engine
     pipeline = PaddleOCRVL(
         pipeline_version="v1.6",
         vl_rec_backend=getattr(args, "vl_rec_backend", "vllm-server"),
@@ -86,6 +97,7 @@ def create_ocr_pipeline(args: argparse.Namespace) -> PaddleOCRVL:
         vl_rec_api_model_name=getattr(
             args, "vl_rec_api_model_name", "PaddleOCR-VL-1.6-0.9B"
         ),
+        **ocr_engine_kwargs,
     )
     try:
         pipeline.paddlex_pipeline.vl_rec_model.batch_sampler.batch_size = 8

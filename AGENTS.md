@@ -8,7 +8,7 @@
 |---|---|
 | `exercise_extractor/main.py` | 主入口与 CLI（argparse）：解析参数后走 pipeline，安装后可用 `python -m exercise_extractor` 调用 |
 | `exercise_extractor/pipeline.py` | 可复用提取管线：`run_pipeline` 整树一次处理（CLI 用）、`iter_sections` 流式逐节处理（对外 API 用）：答案节点先 OCR 切块，再按树序逐节 OCR → 拼页 → 切分 → 回填答案 → yield |
-| `exercise_extractor/api.py` | 对外公共 API `extract_exercise(source, source_type="pdf", doc_type, ...)`：输入 PDF 路径，返回**按节流式产出**的迭代器（每完成一个 section 就 yield 一个，与 exercises.json 节点同结构）；OCR 引擎参数（vl_rec_backend/vl_rec_server_url/vl_rec_max_concurrency/vl_rec_api_model_name）全部可配；预留 source_type 扩展 image/markdown |
+| `exercise_extractor/api.py` | 对外公共 API `extract_exercise(source, source_type="pdf", doc_type, ...)`：输入 PDF 路径，返回**按节流式产出**的迭代器（每完成一个 section 就 yield 一个，与 exercises.json 节点同结构）；OCR 引擎参数（vl_rec_backend/vl_rec_server_url/vl_rec_max_concurrency/vl_rec_api_model_name）与 ocr/toc 的 engine/device（ocr_device/ocr_engine/toc_device/toc_engine）全部可配；预留 source_type 扩展 image/markdown |
 | `exercise_extractor/__main__.py` | `python -m exercise_extractor` 调试入口（等价于仓库根 `python main.py`） |
 | `exercise_extractor/ocr.py` | 目录识别（build_sections，toc_forge + 阿里云 vLLM）与 OCR（ocr_pages，PaddleOCR-VL） |
 | `exercise_extractor/extraction.py` | 提取链：目录树 → 习题区域（build_section_tree）、待 OCR 页码、拼页、规则切分（extract_exercises）；后续 LLM 检查/审核在此插入 |
@@ -145,6 +145,9 @@ SMOKE_TEST_FULL_PIPELINE_DOC_TYPE=exampaper SMOKE_TEST_FULL_PIPELINE_PDF=... pyt
 CLI 的 OCR 引擎参数：`--vl_server_url`（旧名，兼容）、`--vl_rec_backend`、
 `--vl_rec_max_concurrency`、`--vl_rec_api_model_name`；
 `--vl_model` 只控制输出后处理（含 PaddleOCR 时启用块公式修复）。
+推理设备/引擎：`--ocr-device`/`--ocr-engine`（PaddleOCR-VL）、
+`--toc-device`/`--toc-engine`（toc_forge，如 engine="onnxruntime"
+使用模型目录下的 inference.onnx），默认 None 交给各库自行决定。
 
 ## 当前状态
 

@@ -236,7 +236,23 @@ def test_exampaper_build_node() -> None:
 
 def test_api_contract() -> None:
     """extract_exercise 返回迭代器，且入参校验在调用时立即执行。"""
+    import inspect
+
     from exercise_extractor.api import extract_exercise
+
+    params = inspect.signature(extract_exercise).parameters
+    check(
+        "API 暴露 ocr/toc engine/device 参数",
+        all(
+            k in params
+            for k in (
+                "ocr_device",
+                "ocr_engine",
+                "toc_device",
+                "toc_engine",
+            )
+        ),
+    )
 
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
         f.write(b"%PDF-1.4 fake minimal")
@@ -256,6 +272,46 @@ def test_api_contract() -> None:
         check("extract_exercise 入参校验即时抛错", False)
     except FileNotFoundError:
         check("extract_exercise 入参校验即时抛错", True)
+
+
+def test_cli_engine_device_args() -> None:
+    """CLI 能解析 ocr/toc 的 engine/device 参数。"""
+    from unittest import mock
+
+    from exercise_extractor.main import parse_args
+
+    with mock.patch(
+        "sys.argv",
+        [
+            "exercise_extractor",
+            "--input",
+            "/tmp/x.pdf",
+            "--ocr-device",
+            "gpu",
+            "--ocr-engine",
+            "paddle",
+            "--toc-device",
+            "cpu",
+            "--toc-engine",
+            "onnxruntime",
+        ],
+    ):
+        args = parse_args()
+    check(
+        "CLI 解析 ocr/toc engine/device",
+        args.ocr_device == "gpu"
+        and args.ocr_engine == "paddle"
+        and args.toc_device == "cpu"
+        and args.toc_engine == "onnxruntime",
+        str(
+            (
+                args.ocr_device,
+                args.ocr_engine,
+                args.toc_device,
+                args.toc_engine,
+            )
+        ),
+    )
 
 
 def test_match_section_answers() -> None:

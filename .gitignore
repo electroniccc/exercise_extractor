@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 .ocr_cache
 *.log
+*.egg-info/
 
 all_output
 output

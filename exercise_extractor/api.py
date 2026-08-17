@@ -44,6 +44,10 @@ def extract_exercise(
     vl_rec_server_url: str = DEFAULT_VL_SERVER_URL,
     vl_rec_max_concurrency: int = DEFAULT_VL_REC_MAX_CONCURRENCY,
     vl_rec_api_model_name: str = DEFAULT_VL_REC_API_MODEL_NAME,
+    ocr_device: Optional[str] = None,
+    ocr_engine: Optional[str] = None,
+    toc_device: Optional[str] = None,
+    toc_engine: Optional[str] = None,
     vl_server_url: Optional[str] = None,
     vl_model: Optional[str] = None,
     write_outputs: bool = False,
@@ -58,6 +62,12 @@ def extract_exercise(
     vl_rec_*：PaddleOCR-VL 引擎初始化参数（backend / server_url /
     并发数 / 引擎模型名）；vl_server_url、vl_model 为旧参数名的兼容别名，
     传入时覆盖对应的 vl_rec_* 配置。
+    ocr_device / ocr_engine：PaddleOCR-VL 推理设备与引擎
+    （如 device="gpu"/"cpu"，engine="paddle"/"onnxruntime"），
+    None 时交给 paddlex 默认。
+    toc_device / toc_engine：toc_forge 目录识别的设备与引擎
+    （如 engine="onnxruntime" 使用模型目录下的 inference.onnx），
+    None 时交给 toc_forge 默认。
     write_outputs=True 时必须同时给 output_dir，会额外写出
     md / exercises.json / report.json；默认只返回数据不落盘。
 
@@ -93,6 +103,10 @@ def extract_exercise(
         vl_rec_server_url=vl_rec_server_url,
         vl_rec_max_concurrency=vl_rec_max_concurrency,
         vl_rec_api_model_name=vl_rec_api_model_name,
+        ocr_device=ocr_device,
+        ocr_engine=ocr_engine,
+        toc_device=toc_device,
+        toc_engine=toc_engine,
         vl_model=vl_model,
         doc_type=doc_type,
     )

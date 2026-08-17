@@ -85,6 +85,30 @@ def parse_args() -> argparse.Namespace:
         help="VL OCR 引擎模型名 (default: PaddleOCR-VL-1.6-0.9B)",
     )
     parser.add_argument(
+        "--ocr-device",
+        type=str,
+        default=None,
+        help="PaddleOCR-VL 推理设备（如 gpu/cpu，默认交给 paddlex）",
+    )
+    parser.add_argument(
+        "--ocr-engine",
+        type=str,
+        default=None,
+        help="PaddleOCR-VL 推理引擎（如 paddle/onnxruntime，默认交给 paddlex）",
+    )
+    parser.add_argument(
+        "--toc-device",
+        type=str,
+        default=None,
+        help="toc_forge 目录识别设备（如 gpu/cpu，默认交给 toc_forge）",
+    )
+    parser.add_argument(
+        "--toc-engine",
+        type=str,
+        default=None,
+        help="toc_forge 目录识别引擎（如 onnxruntime 使用 inference.onnx）",
+    )
+    parser.add_argument(
         "--doc_type",
         type=str,
         default="textbook",

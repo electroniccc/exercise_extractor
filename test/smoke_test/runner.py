@@ -32,6 +32,7 @@ def main() -> None:
     unit.test_exercise_book_sections()
     unit.test_exampaper_build_node()
     unit.test_api_contract()
+    unit.test_cli_engine_device_args()
     unit.test_match_section_answers()
     unit.test_cli()
     unit.test_full_cache_pipeline()
