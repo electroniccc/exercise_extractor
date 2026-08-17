@@ -23,7 +23,7 @@
 | `exercise_extractor/utils.py` | 基础工具：页面转图像、文件 SHA256 哈希、markdown 块公式修复 |
 | `main.py`（仓库根） | 兼容入口 shim：`python main.py ...` 等价于 `python -m exercise_extractor ...` |
 | `pyproject.toml` | pip 打包配置（setuptools），console script `exercise-extractor` |
-| `start_minio.sh` | 启动本地 MinIO docker（S3 兼容 OSS 后端）：默认 http://127.0.0.1:9000，minioadmin/minioadmin，桶 exercises；环境变量可覆盖 |
+| `start_minio.sh` | 启动本地 MinIO docker（S3 兼容 OSS 后端）：默认 http://127.0.0.1:9000，minioadmin/minioadmin，桶 exercises 并设为公开读；环境变量可覆盖 |
 | `test/smoke_test/` | 冒烟测试模块（87 项）：`common.py` 公共设施（断言计数/CLI 子进程/场景加载）、`scenarios.py` 场景测试与注册表、`unit.py` 单元断言、`runner.py` 入口；运行 `python -m test.smoke_test`。场景化测试文本统一放 `test_scenarios/*.txt`，每个场景一个 txt |
 | `test_scenarios/` | 场景化测试文本：每个场景一个 txt（近真题/旧真题/解析/文末答案/表格答案区/伪造缓存页/习题集等），smoke_test 依次扫描并按文件名分发 |
 
@@ -82,7 +82,7 @@ exampaper 分支不经过第 1/5 步：`build_sections` 直接返回整卷节点
 - **OCR 批大小**：PaddleOCR-VL genai 客户端默认 batch_size=8192（整批页面合成一批，`_doc_vlm_genai_collect_responses` 等整批完成才输出，导致结果到最后才一次性落盘）；`create_ocr_pipeline` 会把 `vl_rec_model.batch_sampler.batch_size` 强制改为 8，配合并发 8 实现按 8 个一批实时输出。
 - **批量 OCR 缺页兜底**：批量 `predict_iter` 正常返回但结果数少于请求页数时（静默截断，不抛异常），批量循环结束后按 `page.md` 是否存在逐个补齐缺失页；仍失败的单页走原有 FAILED 标记流程，不静默丢失。
 - **OCR 后端**：默认且推荐 `vllm-server`（`vl_rec_backend="vllm-server"`，引擎模型 `PaddleOCR-VL-1.6-0.9B`）。llama.cpp + GGUF（`PaddleOCR-VL-1.6-GGUF`）曾因 GGUF 参数/并行数与客户端不匹配出现偶发 FAILED 页，已弃用；`start_llamacpp.sh` 仅作历史参考。FAILED 重试与批量缺页兜底仍保留，防任何后端偶发失败。
-- **OSS/MinIO 图片上传**：`extract_exercise` 传 `oss_endpoint/oss_access_key/oss_secret_key/oss_bucket`（四个必填）即启用：提取完成前把 `<img src="本地路径">` 的图片上传到 OSS，src 替换为公开 URL（优先 `oss_public_base_url`，否则 `http(s)://endpoint/bucket/对象键`）；对象键 = `oss_prefix` + 相对 markdown 缓存根路径（`page_N/imgs/x.jpg`，避免跨页同名覆盖）。同一图片只上传一次（按本地路径缓存 URL）。流式与整树两条管线都生效；缺任一项必填配置则完全不碰网络。本地联调用 `start_minio.sh` 起 MinIO。
+- **OSS/MinIO 图片上传**：`extract_exercise` 传 `oss_endpoint/oss_access_key/oss_secret_key/oss_bucket`（四个必填）即启用：提取完成前把 `<img src="本地路径">` 的图片上传到 OSS，src 替换为公开 URL（优先 `oss_public_base_url`，否则 `http(s)://endpoint/bucket/对象键`）；对象键 = `oss_prefix` + 相对 markdown 缓存根路径（`page_N/imgs/x.jpg`，避免跨页同名覆盖）。同一图片只上传一次（按本地路径缓存 URL）。流式与整树两条管线都生效；缺任一项必填配置则完全不碰网络。**桶必须公开读**（默认 URL 直接拼 endpoint/bucket），否则匿名 GET 403、图片无法加载——`start_minio.sh` 建桶后自动设 `anonymous download`；私有桶/真实 OSS 请用 `oss_public_base_url` 指向公开网关或 CDN。
 
 ## 运行方式
 

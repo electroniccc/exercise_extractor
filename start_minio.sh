@@ -40,9 +40,12 @@ echo "创建桶 ${MINIO_BUCKET} ..."
 docker exec minio mc alias set local \
   "http://127.0.0.1:${MINIO_PORT}" "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null
 docker exec minio mc mb --ignore-existing "local/${MINIO_BUCKET}" >/dev/null
+# 桶设为公开读：markdown 里的 http://endpoint/bucket/... 图片才能直接加载
+docker exec minio mc anonymous set download "local/${MINIO_BUCKET}" >/dev/null
 
 echo "MinIO 已就绪："
 echo "  API:      http://127.0.0.1:${MINIO_PORT}"
 echo "  控制台:   http://127.0.0.1:${MINIO_CONSOLE_PORT}"
 echo "  Access:   ${MINIO_ROOT_USER} / ${MINIO_ROOT_PASSWORD}"
 echo "  Bucket:   ${MINIO_BUCKET}"
+echo "  桶权限:   公开读（anonymous download）"
