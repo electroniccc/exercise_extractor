@@ -335,7 +335,7 @@ def build_section_tree(
                 tail_end = max(tail_start + 1, boundary_page + 1)
                 result["children"].append(
                     {
-                        "title": f"{title}（节尾习题）",
+                        "title": title,
                         "has_exercise": True,
                         "implicit": True,
                         "children": [],

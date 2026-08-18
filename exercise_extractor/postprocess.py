@@ -107,11 +107,17 @@ def write_outputs(
     def sanitize_filename(title: str) -> str:
         return re.sub(r'[\\/:*?"<>|\s]+', "_", title).strip("_")
 
+    def markdown_output_title(node: SectionNode) -> str:
+        title = node["title"]
+        if node.get("implicit"):
+            return f"{title}（节尾习题）"
+        return title
+
     def write_section_markdown(node: SectionNode) -> None:
         # 习题答案章节：按小标题分块输出，附匹配信息注释
         if node.get("is_answers") and node.get("answer_sections"):
             start_page = node["exercise_page_range"][0]
-            fname = f"{start_page}_{sanitize_filename(node['title'])}.md"
+            fname = f"{start_page}_{sanitize_filename(markdown_output_title(node))}.md"
             with open(os.path.join(output_dir, fname), "w", encoding="utf-8") as f:
                 for sec in node["answer_sections"]:
                     f.write(f"## {sec['title']}\n\n")
@@ -127,7 +133,7 @@ def write_outputs(
             return
         if node.get("has_exercise") and node.get("exercises"):
             start_page = node["exercise_page_range"][0]
-            fname = f"{start_page}_{sanitize_filename(node['title'])}.md"
+            fname = f"{start_page}_{sanitize_filename(markdown_output_title(node))}.md"
             with open(os.path.join(output_dir, fname), "w", encoding="utf-8") as f:
                 last_section = None
                 title_norm = re.sub(r"\s+", "", node["title"])

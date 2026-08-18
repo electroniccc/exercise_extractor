@@ -234,6 +234,47 @@ def test_exampaper_build_node() -> None:
     )
 
 
+def test_tail_search_title_stays_out_of_json() -> None:
+    import tempfile
+
+    from exercise_extractor.postprocess import write_outputs
+
+    section = {
+        "title": "1.1 Review of Functions",
+        "has_exercise": True,
+        "implicit": True,
+        "tail_search_used": True,
+        "children": [],
+        "exercise_page_range": [17, 19],
+        "exercises": [
+            {
+                "number": "1",
+                "content": "题目",
+                "answer": "",
+                "solution_steps": "",
+            }
+        ],
+    }
+    with tempfile.TemporaryDirectory() as out_dir, tempfile.TemporaryDirectory() as md_dir:
+        write_outputs([section], out_dir, md_dir)
+        with open(os.path.join(out_dir, "exercises.json"), encoding="utf-8") as f:
+            payload = json.load(f)
+        check(
+            "节尾搜索 title 不写进 exercises.json",
+            payload[0]["title"] == "1.1 Review of Functions",
+            payload[0]["title"],
+        )
+        check(
+            "节尾搜索后缀只保留在 markdown 文件名",
+            os.path.exists(
+                os.path.join(
+                    out_dir,
+                    "17_1.1_Review_of_Functions（节尾习题）.md",
+                )
+            ),
+        )
+
+
 def test_api_contract() -> None:
     """extract_exercise 返回迭代器，且入参校验在调用时立即执行。"""
     import inspect

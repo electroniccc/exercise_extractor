@@ -11,19 +11,6 @@ import os
 from .pipeline import run_pipeline
 from .utils import compute_file_hash
 
-logging.basicConfig(
-    filename="main.log",
-    level=logging.DEBUG,
-    format="%(asctime)s %(name)s %(levelname)s:%(message)s",
-    filemode="w",
-)
-logging.getLogger("toc_forge").setLevel(logging.WARNING)
-logging.getLogger("openai").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("asyncio").setLevel(logging.WARNING)
-
-
 def parse_args() -> argparse.Namespace:
     """解析命令行参数。"""
     # 本地调试默认模型目录；跨机器可设 EXERCISE_EXTRACTOR_MODEL_DIR 覆盖
