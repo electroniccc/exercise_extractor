@@ -20,6 +20,7 @@
 | `exercise_extractor/answers.py` | 习题答案章节：按小标题切分答案、与习题节点匹配（含题数校验） |
 | `exercise_extractor/html_tables.py` | HTML 表格工具：检测严格闭合的 HTML 表格（detect_html_table）、转 markdown 表格（html_table_to_markdown） |
 | `exercise_extractor/postprocess.py` | 后处理：统计报告（collect_report）、导出 md/JSON（write_outputs）、控制台摘要（print_summary） |
+| `exercise_extractor/review/` | Markdown 习题 LLM 审校包：`basic_review.py` 负责基础标点/KaTeX 修复，`math_review.py` 保留后续 SymPy 工具核验（OpenAI-compatible） |
 | `exercise_extractor/utils.py` | 基础工具：页面转图像、文件 SHA256 哈希、markdown 块公式修复 |
 | `main.py`（仓库根） | 兼容入口 shim：`python main.py ...` 等价于 `python -m exercise_extractor ...` |
 | `pyproject.toml` | pip 打包配置（setuptools），console script `exercise-extractor` |
@@ -42,15 +43,15 @@ exampaper 分支不经过第 1/5 步：`build_sections` 直接返回整卷节点
 
 ### Exercise（parse_md_exercises.py）
 
-- `number` / `content` 必有；`separator`、`section`、`pages`、`original_number` 视情况存在。
+- `number` / `content` 必有；`separator`、`section`、`pages`、`original_number` 视情况存在。PDF 管线有页标记时，课本、习题集和试卷习题都会记录 `pages: [起始页, 结束页]`。
 - `number` 可能是 `"__preamble__"`（区间内无编号题时的整段内容占位）。
 - 支持区间题号（`"4-6"`）与多级题号（`"1.1.7"`）。
 - `answer` / `solution_steps`：每个习题都带这两个属性（无内容时为空字符串）。`answer` 来自题干后面的答案段（行首 `答：`/`答:`/`[答]`/`（答）` 起到题目结束）；`solution_steps` 来自行首 `解：`/`解:`/`[解]`/`（解）` 起的解答过程段（裸"解"必须有冒号，避免误判"解析/解决/解释"；带括号的写法无歧义）。两者都从 `content` 中切出单独存放，markdown 输出时以 `解：`/`答：` 单独成段写回。
-- `question_type` / `section_key` / `type_index`：仅 exampaper 习题带。`question_type` 为标准英文枚举：`single_choice`（单选题，普通“选择题”默认单选）/ `multiple_choice`（多选题）/ `fill_in_blank`（填空题）/ `short_answer`（简答题，含解答/计算/应用题及无题型词的旧式小节兜底）/ `proof`（证明题）；`section_key` 为归一化题型小节键（保留中文，如 `一、选择题`/`二`），用于答案区回填；`type_index` 为小节在卷内顺序。
+- `question_type`：三类流程都会提供的标准英文题型枚举。课本/习题集统一默认为 `short_answer`；试卷按题型小节填写：`single_choice`（单选题，普通“选择题”默认单选）/ `multiple_choice`（多选题）/ `fill_in_blank`（填空题）/ `short_answer`（简答题，含解答/计算/应用题及无题型词的旧式小节兜底）/ `proof`（证明题）。`section_key` 仍仅试卷习题带：它是归一化题型小节键（保留中文，如 `一、选择题`/`二`），用于答案区回填。
 
 ### SectionNode（main.py）
 
-- `title`、`has_exercise`、`children`；习题节点含 `exercise_page_range: [start, end)`；隐式节尾习题节点带 `implicit: True`；切分后写入 `exercise_content` 与 `exercises`。
+- `title`、`has_exercise`、`children`；习题节点含 `exercise_page_range: [start, end)`；隐式节尾习题节点带 `implicit: True`；切分后写入 `exercise_content` 与 `exercises`。CLI 开启 `--review` 后，习题节点额外写入 `content: {original, basic_review, tool_review}`，且 `exercises` 与 Markdown 输出使用最终审校版本；答案节点不单独审校。
 
 ### Report（main.py）
 
@@ -125,6 +126,40 @@ for section in extract_exercise(
 `extract_pdf` 保留为别名（后续移除）；`vl_server_url`/`vl_model` 为 OCR
 参数的旧别名（后续移除）。`source_type` 当前仅支持 `"pdf"`，后续扩展
 图片/markdown 时在 `api.SUPPORTED_SOURCE_TYPES` 与分发逻辑中增加。
+
+### Markdown LLM 审校接口
+
+```python
+from exercise_extractor import review_markdown_basic, review_markdown_with_tools
+
+fixed = review_markdown_basic(
+    markdown_content, "同济高等数学（上册）", "习题1-1",
+    base_url="https://api.openai.com/v1", api_key="...", model="...",
+)
+checked = review_markdown_with_tools(
+    fixed, "同济高等数学（上册）", "习题1-1",
+    base_url="http://localhost:8000/v1", api_key="EMPTY", model="...",
+    max_rounds=5,
+)
+```
+
+两个接口默认使用阿里云 OpenAI-compatible 地址和 `qwen3.7-max`，也可以在调用时
+传 `base_url`、`api_key`、`model` 覆盖。两个接口都以整节 Markdown 为一次审校单位；basic review 要求模型直接返回纯 Markdown，不输出逐题审校状态。第一轮按模板校对 OCR 文字、标点与 KaTeX/LaTeX 格式。数学审校模块暂时只保留、不继续开发；第二轮最多 5 轮对话按需调用受限 SymPy 工具核验；每轮可批量调用多个
+SymPy 工具，达到轮数上限时保留已完成的部分修复。CLI 的 `--review` 默认暂时只执行第一轮基础审校，
+加 `--review-with-tools` 才启用第二轮数学审校；`--review-max-rounds` 仅在启用工具审校时生效。也可通过
+`OPENAI_BASE_URL`、`OPENAI_API_KEY`（或 `ALIYUN_API_KEY`）提供默认地址和密钥；
+接口异常或没有返回 Markdown 时直接抛出错误。CLI 使用 `--review` 开启审校，并可用
+`--review-base-url`、`--review-api-key`、`--review-model`、`--review-max-rounds` 覆盖配置。
+小节审校默认以 5 个线程并发执行，可用 `--review-concurrency` 调整（例如 3）；结果仍按
+目录树原顺序写回，服务端有并发/限流上限时应调低该值。
+并发任务每完成一个小节就立即写出对应 Markdown 文件；全部审校结束后再完整写出
+`exercises.json` 和 `report.json`。
+CLI 只审校习题节点；答案章节不再单独调用 LLM，因为习题 Markdown 已经包含对应的解/答。
+两轮审校都必须逐题保持原有的 `解：/答：` 标记数量、顺序和归属；没有解答的题目不得补写解答，
+客户端会按题逐题检查这一结构并记录警告，但不会因结构或数学字面量差异回退模型结果；
+即使模型仍然给无答案题补写了解答，也会依据原始答案掩码自动删除补出的解答，保留其他可用的格式修复。
+开启 `--review` 时 CLI 默认输出 INFO 日志，可看到每个小节的开始/完成、模型轮次、
+SymPy 工具调用和失败回退；日志不会输出题目正文或 API key。
 
 依赖：`pymupdf`、`toc_forge`、`paddleocr`（PaddleOCRVL）、`cv2`、`numpy`、`Pillow`。目录识别需要 `ALIYUN_API_KEY` 环境变量；OCR 需要本地 vllm-server（默认 8080）。
 

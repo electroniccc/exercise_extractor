@@ -18,13 +18,18 @@ from typing import TypedDict
 
 class Exercise(TypedDict, total=False):
     """一道习题。number/content 必有；separator/section/pages 视情况存在；
-    answer/solution_steps 每个习题都有（无内容时为空字符串）。"""
+    answer/solution_steps 每个习题都有（无内容时为空字符串）。
+
+    question_type：题型标准英文枚举。课本/习题集由上层流程统一补为
+    ``short_answer``；试卷流程按题型小节填写更具体的值。
+    """
 
     number: str
     content: str
     separator: str
     section: str
     pages: list[int]
+    question_type: str
     answer: str
     solution_steps: str
 

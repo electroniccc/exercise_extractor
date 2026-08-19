@@ -14,10 +14,12 @@ dependencies = [
     "Pillow",
     "paddleocr",
     "minio",
+    "openai",
+    "sympy",
 ]
 
 [project.scripts]
 exercise-extractor = "exercise_extractor.main:main"
 
 [tool.setuptools]
-packages = ["exercise_extractor"]
+packages = ["exercise_extractor", "exercise_extractor.review"]

@@ -66,6 +66,7 @@ class SectionNode(TypedDict, total=False):
     exercise_content: str
     exercises: list[Exercise]
     answer_sections: list[answers.AnswerSection]
+    content: dict[str, str]
 
 
 def _figure_caption_key(line: str) -> str | None:
@@ -541,6 +542,9 @@ def extract_exercises(
             for item in node["exercises"]:
                 if is_generic_section(item.get("section")):
                     item["section"] = fallback
+                # 课本没有像试卷那样的题型小节，统一按简答题处理，
+                # 使三类输入的习题 JSON 至少共享 question_type 字段。
+                item["question_type"] = "short_answer"
             # 题号统一为按顺序排列的单个数字（1,2,3...），
             # 原题号（可能是多级如 1.1.7）保留在 original_number 供对照
             seq = 0

@@ -3,6 +3,8 @@
 import json
 import os
 import tempfile
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 from .common import check, run_cli
 
@@ -315,6 +317,235 @@ def test_api_contract() -> None:
         check("extract_exercise 入参校验即时抛错", True)
 
 
+def test_llm_review_contract() -> None:
+    """LLM 审校接口只改文本并按题目追加状态，工具轮次可控。"""
+    from exercise_extractor.review import (
+        DEFAULT_REVIEW_BASE_URL,
+        DEFAULT_REVIEW_MODEL,
+        review_markdown_basic,
+        review_markdown_with_tools,
+    )
+
+    check("审校默认模型", DEFAULT_REVIEW_MODEL == "qwen3.7-max")
+    check(
+        "审校默认地址与目录识别一致",
+        DEFAULT_REVIEW_BASE_URL
+        == "https://ws-alorrjihwnhn7hw7.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+    )
+
+    content = "*1.* 题目，内容\n\n解：$x$\n"
+    basic_client = Mock()
+    basic_client.chat.completions.create.return_value = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(
+                    content="*1.* 题目，内容\n\n解：$x$\n",
+                    tool_calls=[],
+                )
+            )
+        ]
+    )
+    reviewed = review_markdown_basic(
+        content, "测试书", "习题1", client=basic_client
+    )
+    check("基础审校保留题目结构", "*1.* 题目，内容" in reviewed)
+    check("基础审校不追加逐题状态", "审校状态：" not in reviewed)
+
+    tool_call = SimpleNamespace(
+        id="call-1",
+        function=SimpleNamespace(
+            name="sympy_equivalent",
+            arguments=json.dumps(
+                {"expression_a": "x^2-1", "expression_b": "(x-1)*(x+1)"}
+            ),
+        ),
+    )
+    tool_client = Mock()
+    tool_client.chat.completions.create.side_effect = [
+        SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content=None, tool_calls=[tool_call])
+                )
+            ]
+        ),
+        SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=json.dumps(
+                            {
+                                "markdown": content,
+                                "statuses": [{"status": "无需修复"}],
+                            }
+                        ),
+                        tool_calls=[],
+                    )
+                )
+            ]
+        ),
+    ]
+    reviewed = review_markdown_with_tools(
+        content,
+        "测试书",
+        "习题1",
+        client=tool_client,
+        max_rounds=3,
+        strict=True,
+    )
+    check("工具审校调用 SymPy", tool_client.chat.completions.create.call_count == 2)
+    check("工具审校追加状态", "审校状态：无需修复" in reviewed)
+
+
+def test_review_removes_supplemented_answers() -> None:
+    """模型新增的解/答段不触发回退，原有答案仍保留。"""
+    from exercise_extractor.review import remove_review_statuses, review_markdown_basic
+
+    content = (
+        "*1.* 求 $x$。\n\n"
+        "*2.* 求 $y$。\n\n解：原解答\n\n"
+        "*3.* 求 $z$。\n\n答：原答案\n"
+    )
+    revised = (
+        "*1.* 求 $x$。\n\n答：模型根据题目补出的答案\n\n"
+        "*2.* 求 $y$。\n\n解：原解答（格式修复）\n\n"
+        "答：模型补出的答案\n\n"
+        "*3.* 求 $z$。\n\n答：原答案（格式修复）\n"
+    )
+    client = Mock()
+    client.chat.completions.create.return_value = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(
+                    content=revised,
+                    tool_calls=[],
+                )
+            )
+        ]
+    )
+    reviewed = review_markdown_basic(
+        content, "测试书", "习题1", client=client
+    )
+    visible = reviewed
+    check("保留模型补出的答案", "模型根据题目补出的答案" in visible)
+    check("保留部分答案后的补答", "模型补出的答案" in visible)
+    check("保留原题已有解答", "原解答（格式修复）" in visible)
+    check("保留原题已有答案", "原答案（格式修复）" in visible)
+    check(
+        "删除补答后仍保留题号",
+        all(visible.count(f"*{number}.*") == 1 for number in (1, 2, 3)),
+    )
+
+
+def test_review_keeps_partial_tool_result() -> None:
+    """工具轮达到上限仍保留此前返回的结构合法修复。"""
+    from exercise_extractor.review import remove_review_statuses, review_markdown_with_tools
+
+    content = "*1.* 原题目\n\n解：原解答\n"
+    partial = "*1.* 已完成格式修复的题目\n\n解：原解答\n"
+    tool_call = SimpleNamespace(
+        id="call-partial",
+        function=SimpleNamespace(
+            name="sympy_simplify",
+            arguments=json.dumps({"expression": "x^2 - 1"}),
+        ),
+    )
+    client = Mock()
+    response = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(
+                    content=json.dumps(
+                        {
+                            "markdown": partial,
+                            "statuses": [{"status": "已修复"}],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    tool_calls=[tool_call],
+                )
+            )
+        ]
+    )
+    client.chat.completions.create.side_effect = [response, response]
+    reviewed = review_markdown_with_tools(
+        content,
+        "测试书",
+        "习题1",
+        client=client,
+        max_rounds=2,
+    )
+    visible = remove_review_statuses(reviewed)
+    check("达到轮数上限保留部分修复", "已完成格式修复的题目" in visible)
+    check("部分修复保留状态", "审校状态：已修复" in reviewed)
+
+
+def test_cli_review_skips_answer_nodes() -> None:
+    """CLI 审校只处理习题节点，答案章节不重复调用 LLM。"""
+    from unittest.mock import patch
+
+    from exercise_extractor import main as cli_main
+
+    sections = [
+        {
+            "title": "习题 1-1",
+            "has_exercise": True,
+            "children": [],
+            "exercises": [
+                {
+                    "number": "1",
+                    "content": "求 $x$。",
+                    "answer": "$1$",
+                    "solution_steps": "",
+                }
+            ],
+        },
+        {
+            "title": "习题答案",
+            "is_answers": True,
+            "children": [],
+            "answer_sections": [{"title": "第1章", "answers": []}],
+        },
+    ]
+    args = SimpleNamespace(
+        input="/tmp/book.pdf",
+        review_base_url=None,
+        review_api_key=None,
+        review_model="qwen3.7-max",
+        review_max_rounds=3,
+    )
+    calls = []
+
+    def fake_basic(content, *rest, **kwargs):
+        calls.append("basic")
+        return content
+
+    def fake_tools(content, *rest, **kwargs):
+        calls.append("tools")
+        return content
+
+    completed = []
+    with patch.object(cli_main, "review_markdown_basic", fake_basic), patch.object(
+        cli_main, "review_markdown_with_tools", fake_tools
+    ):
+        cli_main._review_sections(
+            sections,
+            args,
+            on_section_reviewed=lambda node: completed.append(node["title"]),
+        )
+    check("CLI 默认只执行基础审校并跳过答案节点", calls == ["basic"])
+    check(
+        "审校内容包含答案",
+        sections[0]["content"]["original"].endswith("答：$1$\n\n"),
+    )
+    check(
+        "工具审校关闭时最终版本使用基础审校",
+        sections[0]["content"]["tool_review"]
+        == sections[0]["content"]["basic_review"],
+    )
+    check("小节完成后触发实时输出回调", completed == ["习题 1-1"])
+
+
 def test_cli_engine_device_args() -> None:
     """CLI 能解析 ocr/toc 的 engine/device 参数。"""
     from unittest import mock
@@ -335,15 +566,19 @@ def test_cli_engine_device_args() -> None:
             "cpu",
             "--toc-engine",
             "onnxruntime",
+            "--review-concurrency",
+            "5",
         ],
     ):
         args = parse_args()
     check(
-        "CLI 解析 ocr/toc engine/device",
+        "CLI 解析 ocr/toc engine/device 与 review 并发数",
         args.ocr_device == "gpu"
         and args.ocr_engine == "paddle"
         and args.toc_device == "cpu"
-        and args.toc_engine == "onnxruntime",
+        and args.toc_engine == "onnxruntime"
+        and args.review_concurrency == 5
+        and not args.review_with_tools,
         str(
             (
                 args.ocr_device,

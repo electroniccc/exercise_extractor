@@ -117,6 +117,7 @@ class TypeSection(TypedDict, total=False):
     title: str          # 小节标题全文（去 #，如“一、选择题：1-10 题”）
     section_key: str    # 归一化小节键（如“一、选择题”/“二”），用于答案回填
     question_type: str  # 标准英文枚举（single_choice/multiple_choice/…）
+    start_page: int | None  # 题型标题所在页（页标记在标题前时保留）
     lines: list[str]    # 小节正文（不含标题行）
 
 
@@ -269,6 +270,7 @@ def split_type_sections(
     current: TypeSection | None = None
     index = 0
     seen_question_section = False
+    current_page: int | None = None
 
     def flush() -> None:
         nonlocal current
@@ -281,6 +283,14 @@ def split_type_sections(
     for line in content.split("\n"):
         if tail_lines is not None:
             tail_lines.append(line)
+            continue
+        m_page = re.match(r"^\s*<!--\s*page:\s*(\d+)\s*-->\s*$", line)
+        if m_page:
+            current_page = int(m_page.group(1))
+            # 小节已经开始时保留页标记，切分器才能更新跨页题目的结束页；
+            # 小节尚未开始时由 start_page 接住，避免题型标题前的页标记丢失。
+            if current is not None:
+                current["lines"].append(line)
             continue
         if (
             not in_tail
@@ -309,6 +319,7 @@ def split_type_sections(
                     "title": title,
                     "section_key": _section_key(title),
                     "question_type": _classify_type(title),
+                    "start_page": current_page,
                     "lines": [marker],
                 }
                 if rest:
@@ -320,6 +331,7 @@ def split_type_sections(
                 "title": title,
                 "section_key": _section_key(title),
                 "question_type": _classify_type(title),
+                "start_page": current_page,
                 "lines": [],
             }
             seen_question_section = True
@@ -379,7 +391,9 @@ def _section_pages(lines: list[str]) -> list[int] | None:
     return [pages[0], pages[-1]]
 
 
-def _split_simple_numbered_exercises(chunk: str) -> list[Exercise]:
+def _split_simple_numbered_exercises(
+    chunk: str, start_page: int | None = None
+) -> list[Exercise]:
     """按行切分选择题/填空题（题号逐行出现，不用通用多级题号正则）。
 
     通用切分器会把 “11. 3” 这类答案行误判成多级题号 11.3；
@@ -387,7 +401,7 @@ def _split_simple_numbered_exercises(chunk: str) -> list[Exercise]:
     """
     items: list[Exercise] = []
     current: Exercise | None = None
-    current_page: int | None = None
+    current_page: int | None = start_page
     start_page: int | None = None
     end_page: int | None = None
     for line in chunk.split("\n"):
@@ -419,7 +433,9 @@ def _split_simple_numbered_exercises(chunk: str) -> list[Exercise]:
     return items
 
 
-def _split_short_answer_exercises(chunk: str) -> list[Exercise]:
+def _split_short_answer_exercises(
+    chunk: str, start_page: int | None = None
+) -> list[Exercise]:
     """按行切分简答题（题号行 + 后续行），保留 (1)(2) 子问不拆。
 
     通用切分器会把 “17. 2024年…” 误判成多级题号 17.2024（年份粘连）；
@@ -428,7 +444,7 @@ def _split_short_answer_exercises(chunk: str) -> list[Exercise]:
     """
     items: list[Exercise] = []
     current: Exercise | None = None
-    current_page: int | None = None
+    current_page: int | None = start_page
     start_page: int | None = None
     end_page: int | None = None
     for line in chunk.split("\n"):
@@ -483,12 +499,18 @@ def _split_section_exercises(section: TypeSection) -> list[Exercise]:
         # 现代试卷第一道题是 “1.”/“13.”，节内的（1）（2）是子问，不能转
         if _uses_parenthesized_numbering(chunk):
             chunk = _parenthesized_numbers_to_plain(chunk)
-        exercises = _split_simple_numbered_exercises(chunk)
+        exercises = _split_simple_numbered_exercises(
+            chunk, section.get("start_page")
+        )
     else:
         chunk = _parenthesized_question_numbers_to_plain(chunk)
-        exercises = _split_short_answer_exercises(chunk)
+        exercises = _split_short_answer_exercises(
+            chunk, section.get("start_page")
+        )
     if not exercises:
         pages = _section_pages(section["lines"])
+        if not pages and section.get("start_page") is not None:
+            pages = [section["start_page"], section["start_page"]]
         item: Exercise = {
             "number": "1",
             "separator": ".",
@@ -512,7 +534,6 @@ def _split_section_exercises(section: TypeSection) -> list[Exercise]:
         item["question_type"] = section["question_type"]
         item["section"] = section["title"]
         item["section_key"] = section["section_key"]
-        item["type_index"] = section["index"]
         item.setdefault("answer", "")
         item.setdefault("solution_steps", "")
     return exercises

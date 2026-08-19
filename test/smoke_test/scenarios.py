@@ -41,6 +41,10 @@ def test_textbook_fake_cache() -> None:
         exs = node["exercises"]
         check("伪造缓存提取 2 题", len(exs) == 2, f"got {len(exs)}")
         check(
+            "课本习题默认简答题",
+            all(e["question_type"] == "short_answer" for e in exs),
+        )
+        check(
             "解切到 solution_steps",
             exs[0]["solution_steps"].startswith("解答一"),
         )
@@ -90,6 +94,25 @@ def test_exercise_book_no_toc() -> None:
             i["section"] in ("1.1 数列", "1.2 连续函数") for i in items
         ),
     )
+    check(
+        "习题集习题默认简答题",
+        all(i["question_type"] == "short_answer" for i in items),
+    )
+    node = {
+        "title": "习题 1",
+        "has_exercise": True,
+        "children": [],
+        "exercise_page_range": [4, 6],
+        "exercise_content": (
+            "<!-- page: 4 -->\n## 习题 1\n1. 第一题\n"
+            "<!-- page: 5 -->\n2. 第二题"
+        ),
+    }
+    exercise_book.extract_exercises([node])
+    check(
+        "习题集有目录习题带页码",
+        [e.get("pages") for e in node["exercises"]] == [[4, 4], [5, 5]],
+    )
 
 
 def test_answers_split() -> None:
@@ -133,6 +156,10 @@ def test_exampaper_recent() -> None:
     check(
         "近真题题号保留",
         [e["number"] for e in exs] == ["1", "2", "11", "12", "17", "18"],
+    )
+    check(
+        "近真题习题带页码",
+        all(e.get("pages") == [1, 1] for e in exs),
     )
     check("近真题无答案区", tail is None)
     check("解答题子问不拆", "(1) 求" in exs[4]["content"])

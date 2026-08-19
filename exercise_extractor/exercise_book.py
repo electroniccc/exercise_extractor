@@ -23,6 +23,7 @@ from .extraction import (
 from .parse_md_exercises import (
     HEADING_RE,
     Exercise,
+    page_marker,
     split_exercises,
     truncate_before_page_heading,
     truncate_from_page_heading,
@@ -150,6 +151,7 @@ def _extract_no_toc(content: str) -> list[Exercise]:
             return
         for item in items:
             item["section"] = current_heading
+            item["question_type"] = "short_answer"
         _renumber(items)
         exercises.extend(items)
 
@@ -181,6 +183,13 @@ def extract_exercises(sections: list[SectionNode]) -> None:
                 start_page = node.get("exercise_page_range", [None])[0]
                 if isinstance(start_page, int):
                     content = truncate_from_page_heading(content, start_page)
+                    # 按起始页标题截取时，标题前的 page marker 会被一并截掉；
+                    # 恢复它，让首道题也能获得 pages 属性。
+                    if not re.match(
+                        rf"^\s*<!--\s*page:\s*{start_page}\s*-->",
+                        content,
+                    ):
+                        content = f"{page_marker(start_page)}\n{content}"
                 if node.get("boundary_title"):
                     content = truncate_before_heading(content, node["boundary_title"])
                 # 边界标题写法可能与页内标题不一致（如目录"2 连续函数" vs
@@ -195,6 +204,8 @@ def extract_exercises(sections: list[SectionNode]) -> None:
                 )
                 attach_figures(exercises, figures)
                 convert_exercise_tables(exercises)
+                for item in exercises:
+                    item["question_type"] = "short_answer"
                 _renumber(exercises)
                 node["exercises"] = exercises
             logger.debug(f"[{node['title']}] 提取到 {len(node['exercises'])} 道习题")

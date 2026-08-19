@@ -1,6 +1,7 @@
 """提取后的后处理：统计报告、导出 markdown / JSON、控制台摘要。
 
 collect_report：汇总各习题章节的提取情况（页码范围、缓存页数、习题数）；
+write_section_markdown：单独即时导出一个章节 Markdown；
 write_outputs：导出每节一个 markdown、exercises.json、report.json；
 print_summary：控制台摘要。
 """
@@ -93,6 +94,85 @@ def collect_report(
     return report
 
 
+def render_exercise_markdown(node: SectionNode) -> str:
+    """把单个习题节点渲染成输出 Markdown（不含文件标题）。"""
+    if not node.get("has_exercise") or not node.get("exercises"):
+        return ""
+    chunks: list[str] = []
+    last_section = None
+    title_norm = re.sub(r"\s+", "", node["title"])
+    for item in node["exercises"]:
+        if item["number"] == "__preamble__":
+            chunks.append(f"{item['content']}\n\n")
+            continue
+        section = item.get("section")
+        section_norm = re.sub(r"\s+", "", section) if section else ""
+        if (
+            section
+            and section_norm != title_norm
+            and section_norm != last_section
+        ):
+            chunks.append(f"## {section}\n\n")
+            last_section = section_norm
+        sep = item.get("separator", ".")
+        chunks.append(f"*{item['number']}{sep}* {item['content']}\n\n")
+        if item.get("solution_steps"):
+            chunks.append(f"解：{item['solution_steps']}\n\n")
+        if item.get("answer"):
+            chunks.append(f"答：{item['answer']}\n\n")
+    return "".join(chunks)
+
+
+def render_answer_markdown(node: SectionNode) -> str:
+    """把习题答案节点渲染成输出 Markdown（不含文件标题）。"""
+    if not node.get("is_answers") or not node.get("answer_sections"):
+        return ""
+    chunks: list[str] = []
+    for sec in node["answer_sections"]:
+        chunks.append(f"## {sec['title']}\n\n")
+        if sec.get("matched_title"):
+            chunks.append(
+                f"<!-- 匹配：{sec.get('matched_path') or sec['matched_title']}"
+                f"（答案 {len(sec['answers'])} 题 vs 习题 "
+                f"{sec.get('matched_count')} 题）-->\n\n"
+            )
+        for item in sec["answers"]:
+            sep = item.get("separator", ".")
+            chunks.append(f"*{item['number']}{sep}* {item['content']}\n\n")
+    return "".join(chunks)
+
+
+def _sanitize_filename(title: str) -> str:
+    return re.sub(r'[\\/:*?"<>|\s]+', "_", title).strip("_")
+
+
+def _markdown_output_title(node: SectionNode) -> str:
+    title = node["title"]
+    if node.get("implicit"):
+        return f"{title}（节尾习题）"
+    return title
+
+
+def write_section_markdown(node: SectionNode, output_dir: str) -> str | None:
+    """立即写出单个章节 Markdown，返回路径；无可输出内容时返回 None。"""
+    if node.get("is_answers") and node.get("answer_sections"):
+        start_page = node["exercise_page_range"][0]
+        fname = f"{start_page}_{_sanitize_filename(_markdown_output_title(node))}.md"
+        path = os.path.join(output_dir, fname)
+        content = node.get("content", {}).get("tool_review") or render_answer_markdown(node)
+    elif node.get("has_exercise") and node.get("exercises"):
+        start_page = node["exercise_page_range"][0]
+        fname = f"{start_page}_{_sanitize_filename(_markdown_output_title(node))}.md"
+        path = os.path.join(output_dir, fname)
+        content = node.get("content", {}).get("tool_review") or render_exercise_markdown(node)
+    else:
+        return None
+    os.makedirs(output_dir, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+    return path
+
+
 def write_outputs(
     sections: list[SectionNode], output_dir: str, markdown_path: str
 ) -> Report:
@@ -104,66 +184,13 @@ def write_outputs(
     """
     os.makedirs(output_dir, exist_ok=True)
 
-    def sanitize_filename(title: str) -> str:
-        return re.sub(r'[\\/:*?"<>|\s]+', "_", title).strip("_")
-
-    def markdown_output_title(node: SectionNode) -> str:
-        title = node["title"]
-        if node.get("implicit"):
-            return f"{title}（节尾习题）"
-        return title
-
-    def write_section_markdown(node: SectionNode) -> None:
-        # 习题答案章节：按小标题分块输出，附匹配信息注释
-        if node.get("is_answers") and node.get("answer_sections"):
-            start_page = node["exercise_page_range"][0]
-            fname = f"{start_page}_{sanitize_filename(markdown_output_title(node))}.md"
-            with open(os.path.join(output_dir, fname), "w", encoding="utf-8") as f:
-                for sec in node["answer_sections"]:
-                    f.write(f"## {sec['title']}\n\n")
-                    if sec.get("matched_title"):
-                        f.write(
-                            f"<!-- 匹配：{sec.get('matched_path') or sec['matched_title']}"
-                            f"（答案 {len(sec['answers'])} 题 vs 习题 "
-                            f"{sec.get('matched_count')} 题）-->\n\n"
-                        )
-                    for item in sec["answers"]:
-                        sep = item.get("separator", ".")
-                        f.write(f"*{item['number']}{sep}* {item['content']}\n\n")
-            return
-        if node.get("has_exercise") and node.get("exercises"):
-            start_page = node["exercise_page_range"][0]
-            fname = f"{start_page}_{sanitize_filename(markdown_output_title(node))}.md"
-            with open(os.path.join(output_dir, fname), "w", encoding="utf-8") as f:
-                last_section = None
-                title_norm = re.sub(r"\s+", "", node["title"])
-                for item in node["exercises"]:
-                    if item["number"] == "__preamble__":
-                        f.write(f"{item['content']}\n\n")
-                        continue
-                    # 所属小节（如整章答案里每组答案前的小节名）与文件名重复时不写；
-                    # 目录标题可能带空格而页内标题不带（“习题 2-2” vs “习题2-2”），比较时忽略空白
-                    section = item.get("section")
-                    section_norm = re.sub(r"\s+", "", section) if section else ""
-                    if (
-                        section
-                        and section_norm != title_norm
-                        and section_norm != last_section
-                    ):
-                        f.write(f"## {section}\n\n")
-                        last_section = section_norm
-                    sep = item.get("separator", ".")
-                    f.write(f"*{item['number']}{sep}* {item['content']}\n\n")
-                    # 解答过程/答案单独成段输出（与切分前格式一致）
-                    if item.get("solution_steps"):
-                        f.write(f"解：{item['solution_steps']}\n\n")
-                    if item.get("answer"):
-                        f.write(f"答：{item['answer']}\n\n")
+    def write_tree_markdown(node: SectionNode) -> None:
+        write_section_markdown(node, output_dir)
         for child_node in node.get("children", []):
-            write_section_markdown(child_node)
+            write_tree_markdown(child_node)
 
     for section_node in sections:
-        write_section_markdown(section_node)
+        write_tree_markdown(section_node)
 
     with open(os.path.join(output_dir, "exercises.json"), "w", encoding="utf-8") as f:
         json.dump(sections, f, ensure_ascii=False, indent=2)
