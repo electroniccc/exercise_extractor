@@ -1,6 +1,6 @@
-"""对外公共 API：输入文件路径，返回提取到的习题 JSON。
+"""对外公共 API：输入文件路径，流式返回扁平的习题 section JSON。
 
-返回结构与 exercises.json 一致（SectionNode 列表）。OCR 需要本地
+每次 yield 一个不含 ``children`` 的公共 section object。OCR 需要本地
 vllm-server（默认 http://localhost:8080/v1；llama.cpp+GGUF 已弃用）。
 当前支持 PDF，
 后续计划支持 image / markdown 等输入。
@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from typing import Optional
 
 from .pipeline import iter_sections
+from .public_schema import public_section_from_node
 
 DEFAULT_VL_SERVER_URL = "http://localhost:8080/v1"
 DEFAULT_VL_REC_BACKEND = "vllm-server"
@@ -60,7 +61,7 @@ def extract_exercise(
     vl_model: Optional[str] = None,
     write_outputs: bool = False,
 ) -> Iterator[dict]:
-    """提取 PDF 中的习题，返回按节流式产出的迭代器。
+    """提取 PDF 中的习题，返回按节流式产出的公共 section 迭代器。
 
     source：输入文件路径（当前仅支持 PDF）。
     source_type：输入类型，当前仅 "pdf"；后续支持 "image"/"markdown"。
@@ -80,12 +81,13 @@ def extract_exercise(
     bucket）齐全时启用图片上传：把 markdown 里的本地图片传到 OSS，
     src 替换为公开 URL（优先 oss_public_base_url，否则
     http(s)://endpoint/bucket/对象键）；缺任一项则不启用。
-    write_outputs=True 时必须同时给 output_dir，会额外写出
-    md / exercises.json / report.json；默认只返回数据不落盘。
+    write_outputs=True 时必须同时给 output_dir，会额外写出每个 section 的
+    md/json 以及 report.json；不再写总的 exercises.json。
 
-    返回迭代器：每完成一个习题章节就 yield 一个 SectionNode（与
-    exercises.json 中节点同结构），课本/习题集章节多时不用等整本 OCR
-    结束。参数校验（文件存在、source_type、model_dir）在调用时立即执行。
+    返回迭代器：每完成一个有编号习题的 section 就 yield 一个不含
+    ``children`` 的公共 JSON object。section 的 ``path`` 使用 ``/`` 记录
+    其在目录树中的完整路径；答案节点和无编号习题节点不会 yield。
+    参数校验（文件存在、source_type、model_dir）在调用时立即执行。
     """
     if source_type not in SUPPORTED_SOURCE_TYPES:
         raise NotImplementedError(
@@ -130,7 +132,22 @@ def extract_exercise(
         vl_model=vl_model,
         doc_type=doc_type,
     )
-    return iter_sections(args, write_outputs_enabled=write_outputs)
+    internal_sections = iter_sections(args, write_outputs_enabled=write_outputs)
+    document_name = os.path.splitext(os.path.basename(source))[0]
+
+    def public_sections() -> Iterator[dict]:
+        for node in internal_sections:
+            if not node.get("has_exercise"):
+                continue
+            public = public_section_from_node(
+                node,
+                path=node.get("_section_path") or node.get("title"),
+                document_name=document_name,
+            )
+            if public is not None:
+                yield public
+
+    return public_sections()
 
 
 # 兼容旧名（v0.1.0 早期接口），后续可移除

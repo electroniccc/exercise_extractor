@@ -359,7 +359,7 @@ def build_section_tree(
         if section_result:
             sections.append(section_result)
     # 记录本次运行是否启用了节尾搜索：写入每个节点，
-    # 便于在 exercises.json 中查看（隐式节点 implicit=True 即节尾搜索产物）
+    # 便于在内部结果中查看（隐式节点 implicit=True 即节尾搜索产物）
     def mark_tail_search(nodes: list[SectionNode]) -> None:
         for n in nodes:
             n["tail_search_used"] = use_tail_search

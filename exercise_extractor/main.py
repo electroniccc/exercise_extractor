@@ -12,16 +12,17 @@ from typing import Callable
 
 from .parse_md_exercises import split_exercises
 from .pipeline import run_pipeline
+from .public_schema import public_section_from_node
 from .postprocess import (
     print_summary,
-    render_exercise_markdown,
     write_section_markdown,
+    write_section_json,
     write_outputs,
 )
 from .review import (
     DEFAULT_REVIEW_MODEL,
     remove_review_statuses,
-    review_markdown_basic,
+    review_basic,
     review_markdown_with_tools,
 )
 from .utils import compute_file_hash
@@ -196,19 +197,6 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def _copy_review_metadata(original: dict, reviewed: dict) -> None:
-    """重新切分审校 Markdown 后，恢复 OCR 阶段产生的元数据。"""
-    for field in (
-        "pages",
-        "question_type",
-        "section_key",
-        "original_number",
-        "type_index",
-    ):
-        if field in original:
-            reviewed[field] = original[field]
-
-
 def _review_sections(
     sections: list,
     args: argparse.Namespace,
@@ -218,27 +206,36 @@ def _review_sections(
     document_name = os.path.splitext(os.path.basename(args.input))[0]
     use_tools = bool(getattr(args, "review_with_tools", False))
 
-    review_jobs: list[tuple[dict, str, str]] = []
+    review_jobs: list[tuple[dict, str, dict]] = []
 
     def collect_review_jobs(node: dict, path: str) -> None:
-        section_name = f"{path} › {node['title']}" if path else node["title"]
-        if node.get("has_exercise") and node.get("exercises"):
-            review_jobs.append((node, section_name, render_exercise_markdown(node)))
+        section_name = f"{path}/{node['title']}" if path else node["title"]
+        if node.get("has_exercise") and any(
+            item.get("number") not in (None, "__preamble__")
+            for item in node.get("exercises", [])
+        ):
+            public = public_section_from_node(
+                node,
+                path=section_name,
+                document_name=document_name,
+            )
+            if public is not None:
+                review_jobs.append((node, section_name, public))
         for child in node.get("children", []):
             collect_review_jobs(child, section_name)
 
-    def run_review_job(job: tuple[dict, str, str]) -> tuple[dict, str, str, str, str]:
-        node, section_name, original_content = job
-        basic_content = review_markdown_basic(
-            original_content,
-            document_name,
-            section_name,
+    def run_review_job(job: tuple[dict, str, dict]) -> tuple[dict, str, dict]:
+        node, section_name, public_section = job
+        basic_section = review_basic(
+            public_section,
             base_url=args.review_base_url,
             api_key=args.review_api_key,
             model=args.review_model,
         )
-        final_content = basic_content
         if use_tools:
+            # 数学工具审校仍是保留中的实验分支；基础审校的公共 JSON
+            # 结果先作为第二轮输入，最终再切回公共 section。
+            basic_content = basic_section["content"]["basic_review"]
             final_content = review_markdown_with_tools(
                 basic_content,
                 document_name,
@@ -248,37 +245,53 @@ def _review_sections(
                 model=args.review_model,
                 max_rounds=args.review_max_rounds,
             )
-        return node, section_name, original_content, basic_content, final_content
+            basic_section["content"]["tool_review"] = final_content
+            tool_items = [
+                item
+                for item in split_exercises(
+                    remove_review_statuses(final_content),
+                    check_section_end=False,
+                )
+                if item.get("number") != "__preamble__"
+            ]
+            if not tool_items:
+                raise ValueError("数学审校返回的 Markdown 无法解析出编号习题")
+            basic_items = basic_section["exercises"]
+            if len(tool_items) != len(basic_items):
+                basic_section.setdefault("review_warnings", []).append(
+                    {
+                        "code": "tool_review_exercise_count_changed",
+                        "original": len(basic_items),
+                        "reviewed": len(tool_items),
+                        "severity": "high",
+                    }
+                )
+            for index, item in enumerate(tool_items):
+                if index >= len(basic_items):
+                    continue
+                for field in (
+                    "pages",
+                    "question_type",
+                    "section",
+                    "section_key",
+                    "original_number",
+                ):
+                    item[field] = basic_items[index].get(field)
+            basic_section["exercises"] = tool_items
+        return node, section_name, basic_section
 
     def apply_review_result(
         node: dict,
         section_name: str,
-        original_content: str,
-        basic_content: str,
-        final_content: str,
+        reviewed_section: dict,
     ) -> None:
-        node["content"] = {
-            "original": original_content,
-            "basic_review": basic_content,
-            "tool_review": final_content,
-        }
-        reviewed_items = split_exercises(
-            remove_review_statuses(final_content),
-            check_section_end=False,
-        )
-        original_items = node["exercises"]
-        reviewed_numbered = [
-            item for item in reviewed_items if item.get("number") != "__preamble__"
-        ]
-        original_numbered = [
-            item for item in original_items if item.get("number") != "__preamble__"
-        ]
-        if len(reviewed_numbered) == len(original_numbered):
-            for old, new in zip(original_numbered, reviewed_numbered):
-                _copy_review_metadata(old, new)
-            node["exercises"] = reviewed_items
-        else:
-            logger.warning("[%s] 审校后题数变化，保留原 exercises 结构", section_name)
+        node["content"] = reviewed_section["content"]
+        node["review_warnings"] = reviewed_section.get("review_warnings", [])
+        node["answer_match"] = reviewed_section.get("answer_match", {})
+        node["_section_path"] = section_name
+        # review_basic 已完成固定字段归一化、答案掩码清理和质量告警；即使
+        # 题数变化也直接采用模型结果，不再把内部 exercises 回退为原文。
+        node["exercises"] = reviewed_section["exercises"]
 
     for section in sections:
         collect_review_jobs(section, "")
@@ -296,16 +309,8 @@ def _review_sections(
     with ThreadPoolExecutor(max_workers=concurrency) as executor:
         futures = [executor.submit(run_review_job, job) for job in review_jobs]
         for future in as_completed(futures):
-            (
-                node,
-                section_name,
-                original_content,
-                basic_content,
-                final_content,
-            ) = future.result()
-            apply_review_result(
-                node, section_name, original_content, basic_content, final_content
-            )
+            node, section_name, reviewed_section = future.result()
+            apply_review_result(node, section_name, reviewed_section)
             if on_section_reviewed is not None:
                 on_section_reviewed(node)
     logger.info("并发审校完成：小节数=%d", len(review_jobs))
@@ -339,11 +344,25 @@ def main() -> None:
     )
     def write_reviewed_section(node: dict) -> None:
         path = write_section_markdown(node, args.output)
+        section_path = node.get("_section_path")
+        if section_path is None:
+            section_path = node.get("title", "")
+        write_section_json(
+            node,
+            args.output,
+            path=section_path,
+            document_name=os.path.splitext(os.path.basename(args.input))[0],
+        )
         if path:
             logger.info("审校小节已实时写出：%s", path)
 
     _review_sections(sections, args, on_section_reviewed=write_reviewed_section)
-    report = write_outputs(sections, args.output, markdown_path)
+    report = write_outputs(
+        sections,
+        args.output,
+        markdown_path,
+        document_name=os.path.splitext(os.path.basename(args.input))[0],
+    )
     print_summary(report)
     print(f"输出目录: {os.path.abspath(args.output)}")
 

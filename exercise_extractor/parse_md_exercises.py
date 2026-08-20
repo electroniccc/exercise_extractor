@@ -49,12 +49,16 @@ EXERCISE_RANGE_RE = re.compile(
     + r"(\d{1,3})\s*"
     + _EXERCISE_JUNK
     + _NUMBER_SEPARATOR
-    + r"(?!\d)\s*"
+    + r"\*?(?!\d)\s*"
 )
 # 普通题号："1. 求..."、"1．..."、"1、..."、"1）..."
 # （(?!\d) 防止把 "2.5" 之类的小数误判为题号）
 EXERCISE_NUM_RE = re.compile(
-    r"^\s*" + _EXERCISE_JUNK + r"(\d{1,3})\s*" + _NUMBER_SEPARATOR + r"(?!\d)\s*"
+    r"^\s*"
+    + _EXERCISE_JUNK
+    + r"(\d{1,3})\s*"
+    + _NUMBER_SEPARATOR
+    + r"\*?(?!\d)\s*"
 )
 # 多级题号："1.1.1 证明..."、"1.1 证明..."、"1. 1.7 ..."、"1. 1. 10 ..."
 # （OCR 常在点号后加空格）。允许 2 段及以上：不少教材按"章.题"编号
@@ -62,7 +66,9 @@ EXERCISE_NUM_RE = re.compile(
 # 2 段数字在正文里也可能是节引用（如 "4.9 节的定理"），但不会单独成题：
 # 会被后续的小节归属过滤 / 连续性校验 / 节尾匹配规则兜底。
 EXERCISE_MULTI_RE = re.compile(
-    r"^\s*" + _EXERCISE_JUNK + r"(\d{1,3}(?:\s*[.．]\s*\d{1,3})+)\s*"
+    r"^\s*"
+    + _EXERCISE_JUNK
+    + r"(\d{1,3}(?:\s*[.．]\s*\d{1,3})+)\s*[.．]?\*?\s*"
 )
 # markdown 标题行（# 开头）：作为小节边界，重置题号序列
 HEADING_RE = re.compile(r"^\s*#")
@@ -145,9 +151,11 @@ def normalize_section(text: str) -> str:
     """归一化小节名用于比较：忽略空白与 LaTeX/星号噪声。
 
     目录标题可能是 "*习题 7-10"，页内 OCR 标题可能是 "##  $ ^{*} $习题 7-10"，
-    两者都应归一到 "习题7-10"。
+    两者都应归一到 "习题7-10"。目录和 OCR 对区间题号使用的横线字符
+    也可能不同（如 ``1–5`` 与 ``1-5``），统一为 ASCII 连字符。
     """
-    return re.sub(r"[\s*^{}$]+", "", text or "")
+    normalized = re.sub(r"[‐‑‒–—−－~～]", "-", text or "")
+    return re.sub(r"[\s*^{}$]+", "", normalized)
 
 
 # 泛化习题字样：只有 "习题/练习/作业" 之类，不带编号或知识点

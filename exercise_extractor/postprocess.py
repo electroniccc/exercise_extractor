@@ -1,8 +1,8 @@
 """提取后的后处理：统计报告、导出 markdown / JSON、控制台摘要。
 
 collect_report：汇总各习题章节的提取情况（页码范围、缓存页数、习题数）；
-write_section_markdown：单独即时导出一个章节 Markdown；
-write_outputs：导出每节一个 markdown、exercises.json、report.json；
+write_section_markdown / write_section_json：单独即时导出一个章节；
+write_outputs：导出每节 markdown、section JSON 和 report.json；
 print_summary：控制台摘要。
 """
 
@@ -13,8 +13,17 @@ import re
 from typing import NotRequired, TypedDict
 
 from .extraction import SectionNode
+from .public_schema import public_section_from_node
 
 logger = logging.getLogger(__name__)
+
+
+def _numbered_exercises(node: SectionNode) -> list[dict]:
+    return [
+        item
+        for item in node.get("exercises", [])
+        if item.get("number") not in (None, "__preamble__")
+    ]
 
 
 class ReportSection(TypedDict):
@@ -44,6 +53,7 @@ def collect_report(
     report: Report = {"total_exercises": 0, "sections": []}
 
     def walk(node: SectionNode, path: str = "") -> None:
+        node_path = f"{path}/{node['title']}" if path else node["title"]
         if node.get("has_exercise") or node.get("is_answers"):
             start_page, end_page = node["exercise_page_range"]
             pages = list(range(start_page, end_page))
@@ -62,7 +72,7 @@ def collect_report(
                 report["sections"].append(
                     {
                         "title": node["title"],
-                        "path": path,
+                        "path": node_path,
                         "page_range": [start_page, end_page],
                         "pages_total": len(pages),
                         "pages_cached": len(cached),
@@ -73,11 +83,11 @@ def collect_report(
                 )
                 report["total_exercises"] += len(answers_list)
             else:
-                exercises = node.get("exercises", [])
+                exercises = _numbered_exercises(node)
                 report["sections"].append(
                     {
                         "title": node["title"],
-                        "path": path,
+                        "path": node_path,
                         "page_range": [start_page, end_page],
                         "pages_total": len(pages),
                         "pages_cached": len(cached),
@@ -87,7 +97,7 @@ def collect_report(
                 )
                 report["total_exercises"] += len(exercises)
         for child_node in node.get("children", []):
-            walk(child_node, f"{path} › {node['title']}" if path else node["title"])
+            walk(child_node, node_path)
 
     for section_node in sections:
         walk(section_node)
@@ -160,7 +170,7 @@ def write_section_markdown(node: SectionNode, output_dir: str) -> str | None:
         fname = f"{start_page}_{_sanitize_filename(_markdown_output_title(node))}.md"
         path = os.path.join(output_dir, fname)
         content = node.get("content", {}).get("tool_review") or render_answer_markdown(node)
-    elif node.get("has_exercise") and node.get("exercises"):
+    elif node.get("has_exercise") and _numbered_exercises(node):
         start_page = node["exercise_page_range"][0]
         fname = f"{start_page}_{_sanitize_filename(_markdown_output_title(node))}.md"
         path = os.path.join(output_dir, fname)
@@ -173,27 +183,63 @@ def write_section_markdown(node: SectionNode, output_dir: str) -> str | None:
     return path
 
 
+def write_section_json(
+    node: SectionNode,
+    output_dir: str,
+    *,
+    path: str | None = None,
+    document_name: str = "",
+) -> str | None:
+    """写出单个公共 section JSON；答案节点或空节点不写文件。"""
+    public = public_section_from_node(
+        node, path=path, document_name=document_name
+    )
+    if public is None:
+        return None
+    start_page = node["exercise_page_range"][0]
+    # 节尾搜索标记只允许出现在 Markdown 文件名；公共 JSON 的文件名和
+    # object.title 都使用原始 section 标题。
+    fname = f"{start_page}_{_sanitize_filename(node['title'])}.json"
+    output_path = os.path.join(output_dir, fname)
+    os.makedirs(output_dir, exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(public, f, ensure_ascii=False, indent=2)
+    return output_path
+
+
 def write_outputs(
-    sections: list[SectionNode], output_dir: str, markdown_path: str
+    sections: list[SectionNode],
+    output_dir: str,
+    markdown_path: str,
+    *,
+    document_name: str = "",
 ) -> Report:
     """导出结果文件并返回统计报告。
 
     - {起始页}_{章节}.md  每节一个 markdown，题号用 *N.* 行内斜体标记
-    - exercises.json  完整结果（含 exercise_content 和 exercises）
+    - {起始页}_{章节}.json  对应的扁平公共 section JSON
     - report.json     统计报告
     """
     os.makedirs(output_dir, exist_ok=True)
 
-    def write_tree_markdown(node: SectionNode) -> None:
+    def write_tree(node: SectionNode, parent_path: str = "") -> None:
+        node_path = (
+            f"{parent_path}/{node['title']}"
+            if parent_path
+            else node["title"]
+        )
         write_section_markdown(node, output_dir)
+        write_section_json(
+            node,
+            output_dir,
+            path=node_path,
+            document_name=document_name,
+        )
         for child_node in node.get("children", []):
-            write_tree_markdown(child_node)
+            write_tree(child_node, node_path)
 
     for section_node in sections:
-        write_tree_markdown(section_node)
-
-    with open(os.path.join(output_dir, "exercises.json"), "w", encoding="utf-8") as f:
-        json.dump(sections, f, ensure_ascii=False, indent=2)
+        write_tree(section_node)
 
     report = collect_report(sections, markdown_path)
     with open(os.path.join(output_dir, "report.json"), "w", encoding="utf-8") as f:
@@ -212,13 +258,13 @@ def print_summary(report: Report) -> None:
         if sec["exercise_count"] == 0:
             problems += 1
             print(
-                f"  [无习题] {sec['path']} › {sec['title']}  "
+                f"  [无习题] {sec['path']}  "
                 f"页 {sec['page_range'][0]}–{sec['page_range'][1] - 1}  "
                 f"缓存 {sec['pages_cached']}/{sec['pages_total']}"
             )
         elif sec["pages_cached"] < sec["pages_total"]:
             print(
-                f"  [缺页]   {sec['path']} › {sec['title']}  "
+                f"  [缺页]   {sec['path']}  "
                 f"缓存 {sec['pages_cached']}/{sec['pages_total']}  "
                 f"已提取 {sec['exercise_count']} 道"
             )

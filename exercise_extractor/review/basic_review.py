@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 # 与 ocr.py 中 toc_forge.bookmark_pdf 使用同一套阿里云 OpenAI-compatible 地址；
 # 调用接口时仍可通过 base_url 覆盖为其他兼容服务。
-DEFAULT_REVIEW_MODEL = "qwen3.7-max"
+DEFAULT_REVIEW_MODEL = "qwen3.7-max-2026-05-17"
 DEFAULT_REVIEW_BASE_URL = (
     "https://ws-alorrjihwnhn7hw7.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
 )
@@ -495,3 +495,120 @@ def review_markdown_basic(
         "有" if revised != content else "无",
     )
     return revised.rstrip() + "\n"
+
+
+def review_basic(
+    section: dict[str, Any],
+    *,
+    base_url: str | None = None,
+    api_key: str | None = None,
+    model: str = DEFAULT_REVIEW_MODEL,
+    client: Any = None,
+) -> dict[str, Any]:
+    """对一个公共 section JSON 做基础审校并返回新的 section JSON。
+
+    调用方只需要传入一个 JSON-compatible ``dict``；Markdown 由实现根据
+    ``section.content``/``section.exercises``生成，LLM 返回后再切回固定的
+    section JSON。接口不修改输入对象。服务异常、空响应或无法切回有效题目
+    时直接抛出异常；题数变化和低相似度只写入 ``review_warnings``，不回退。
+    """
+    from ..public_schema import normalize_public_section, public_section_from_node
+    from ..parse_md_exercises import split_exercises
+
+    normalized = normalize_public_section(section)
+    document_name = normalized.get("document_name")
+    if not document_name:
+        raise ValueError("section.document_name 不能为空")
+    section_name = normalized.get("path") or normalized.get("title")
+    content_versions = normalized["content"]
+    source = (
+        content_versions.get("tool_review")
+        or content_versions.get("basic_review")
+        or content_versions.get("original")
+    )
+    if not source:
+        raise ValueError("section.content.original 不能为空")
+
+    raw_revised = review_markdown_basic(
+        source,
+        document_name,
+        section_name,
+        base_url=base_url,
+        api_key=api_key,
+        model=model,
+        client=client,
+    ).strip()
+    revised, removed_answers = _remove_unexpected_answer_segments(
+        source, raw_revised
+    )
+    reviewed_items = [
+        item
+        for item in split_exercises(revised, check_section_end=False)
+        if item.get("number") != "__preamble__"
+    ]
+    if not reviewed_items:
+        raise ValueError("LLM 返回的 Markdown 无法解析出编号习题")
+
+    original_items = normalized["exercises"]
+    warnings: list[dict[str, Any]] = []
+    if len(reviewed_items) != len(original_items):
+        warnings.append(
+            {
+                "code": "exercise_count_changed",
+                "original": len(original_items),
+                "reviewed": len(reviewed_items),
+                "severity": "high",
+            }
+        )
+    if removed_answers:
+        warnings.append(
+            {"code": "added_answers_removed", "count": removed_answers}
+        )
+    similarity = _review_text_similarity(source, revised)
+    if similarity < MIN_REVIEW_TEXT_SIMILARITY:
+        warnings.append(
+            {
+                "code": "low_text_similarity",
+                "similarity": round(similarity, 4),
+                "threshold": MIN_REVIEW_TEXT_SIMILARITY,
+                "severity": "high",
+            }
+        )
+
+    # 按题目顺序恢复页码、题型、原题号等 OCR 元数据；模型新增题目没有
+    # 对应元数据时仍保留模型结果，但使用固定字段默认值。
+    for index, item in enumerate(reviewed_items):
+        if index >= len(original_items):
+            item["question_type"] = item.get("question_type") or "short_answer"
+            continue
+        original_item = original_items[index]
+        for field in (
+            "pages",
+            "question_type",
+            "section",
+            "section_key",
+            "original_number",
+        ):
+            if field in original_item:
+                item[field] = original_item[field]
+
+    reviewed_node = {
+        **normalized,
+        "exercises": reviewed_items,
+        "content": {
+            "original": normalized["content"]["original"],
+            "basic_review": revised.rstrip() + "\n",
+            # 当前默认只启用基础审校，因此它同时就是最终版本；后续
+            # 数学工具审校可再覆盖这个字段。
+            "tool_review": revised.rstrip() + "\n",
+        },
+        "review_warnings": warnings,
+    }
+    result = public_section_from_node(
+        reviewed_node,
+        path=normalized["path"],
+        document_name=document_name,
+    )
+    if result is None:  # pragma: no cover - reviewed_items 已做非空校验
+        raise ValueError("审校结果没有有效习题")
+    return result

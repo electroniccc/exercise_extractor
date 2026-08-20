@@ -1,23 +1,22 @@
 #!/usr/bin/env python3
-"""快速调试单个 section 的基础 LLM 审校。
+"""快速调试一个公共 section JSON 的基础 LLM 审校。
 
 示例：
     python poc/review_basic.py \
-        output/tongji_gaoshu_first1/31_习题_1–1.md \
-        --document-name "同济大学高等数学第七版上册" \
-        --output /tmp/review_1_1.md
+        output/tongji_gaoshu_first1/41_习题_1–2.json \
+        --output /tmp/review_1_2.json \
+        --diff
 
-默认只把审校结果打印到 stdout；日志打印到 stderr。输入文件开头的
-Markdown 小标题会默认去掉，因为 review API 接收的是不含文件标题的 section 内容。
+输入和输出都是单个 section 的 JSON object；diff 不打印到终端，而写到
+输出文件同目录下的 ``.diff.txt`` 文件。
 """
 
 from __future__ import annotations
 
 import argparse
 import difflib
+import json
 import logging
-import os
-import re
 import sys
 from pathlib import Path
 
@@ -28,43 +27,15 @@ if str(ROOT) not in sys.path:
 from exercise_extractor.review import (  # noqa: E402
     DEFAULT_REVIEW_BASE_URL,
     DEFAULT_REVIEW_MODEL,
-    review_markdown_basic,
+    review_basic,
 )
-
-
-def _strip_file_heading(content: str) -> tuple[str, str | None]:
-    """去掉文件开头的第一个 Markdown 标题，返回正文和标题。"""
-    match = re.match(r"\A\s*(#{1,6})\s+(.+?)\s*(?:\n|\Z)", content)
-    if not match:
-        return content, None
-    return content[match.end() :].lstrip("\n"), match.group(2)
-
-
-_PAGE_PREFIX_RE = re.compile(r"^\d+_")
-_TAIL_SEARCH_SUFFIX_RE = re.compile(
-    r"[（(]\s*(?:节尾习题|节尾搜索|结尾习题)\s*[）)]$"
-)
-
-
-def _section_name_from_path(path: Path) -> str:
-    """从输出文件名去掉页码前缀和节尾搜索标记。"""
-    name = _PAGE_PREFIX_RE.sub("", path.stem, count=1)
-    return _TAIL_SEARCH_SUFFIX_RE.sub("", name).rstrip()
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="调试单个 Markdown section 的基础审校")
-    parser.add_argument("input", type=Path, help="待审校的 section Markdown 文件")
-    parser.add_argument(
-        "--document-name",
-        default=None,
-        help="文档名称（默认读取 REVIEW_DOCUMENT_NAME，或使用输入文件父目录名）",
-    )
-    parser.add_argument(
-        "--section-name",
-        default=None,
-        help="小节名称（默认使用输入文件名，不含扩展名）",
-    )
+    parser = argparse.ArgumentParser(description="调试单个 JSON section 的基础审校")
+    parser.add_argument("input", type=Path, help="待审校的 section JSON 文件")
+    parser.add_argument("--document-name", default=None, help="覆盖 section.document_name")
+    parser.add_argument("--section-name", default=None, help="覆盖 section.path")
     parser.add_argument(
         "--base-url",
         default=None,
@@ -80,21 +51,11 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_REVIEW_MODEL,
         help=f"审校模型（默认 {DEFAULT_REVIEW_MODEL}）",
     )
-    parser.add_argument(
-        "--output",
-        type=Path,
-        default=None,
-        help="可选：把结果另存为 Markdown 文件",
-    )
+    parser.add_argument("--output", type=Path, required=True, help="审校后的 section JSON")
     parser.add_argument(
         "--diff",
         action="store_true",
-        help="把原文与审校结果的 unified diff 写到结果同目录的 .diff.txt 文件",
-    )
-    parser.add_argument(
-        "--keep-heading",
-        action="store_true",
-        help="保留输入文件开头的小标题，不按默认行为剥离",
+        help="把输入/输出 JSON 的 unified diff 写到结果同目录的 .diff.txt 文件",
     )
     return parser.parse_args()
 
@@ -108,58 +69,40 @@ def main() -> int:
     if not args.input.is_file():
         print(f"输入文件不存在：{args.input}", file=sys.stderr)
         return 2
-    if not args.output:
-        print("需要指定output")
+
+    try:
+        section = json.loads(args.input.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"输入 JSON 无法读取：{exc}", file=sys.stderr)
         return 2
+    if not isinstance(section, dict):
+        print("输入必须是单个 section JSON object，不是数组", file=sys.stderr)
+        return 2
+    if args.document_name is not None:
+        section["document_name"] = args.document_name
+    if args.section_name is not None:
+        section["path"] = args.section_name
 
-    original = args.input.read_text(encoding="utf-8")
-    if args.keep_heading:
-        content = original
-        detected_heading = None
-    else:
-        content, detected_heading = _strip_file_heading(original)
-    document_name = (
-        args.document_name
-        or os.environ.get("REVIEW_DOCUMENT_NAME")
-        or args.input.parent.name
-    )
-    section_name = args.section_name or _section_name_from_path(args.input)
-    logging.getLogger(__name__).info(
-        "开始单节基础审校：文件=%s，文档=%s，小节=%s，剥离标题=%s",
-        args.input,
-        document_name,
-        section_name,
-        detected_heading or "无",
-    )
-
-    reviewed = review_markdown_basic(
-        content,
-        document_name,
-        section_name,
+    reviewed = review_basic(
+        section,
         base_url=args.base_url,
         api_key=args.api_key,
         model=args.model,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(reviewed, encoding="utf-8")
+    original_text = json.dumps(section, ensure_ascii=False, indent=2) + "\n"
+    reviewed_text = json.dumps(reviewed, ensure_ascii=False, indent=2) + "\n"
+    args.output.write_text(reviewed_text, encoding="utf-8")
     logging.getLogger(__name__).info("结果已写出：%s", args.output)
 
-    # sys.stdout.write(reviewed)
-    # if reviewed and not reviewed.endswith("\n"):
-    #     sys.stdout.write("\n")
     if args.diff:
         diff = difflib.unified_diff(
-            content.splitlines(keepends=True),
-            reviewed.splitlines(keepends=True),
+            original_text.splitlines(keepends=True),
+            reviewed_text.splitlines(keepends=True),
             fromfile=str(args.input),
-            tofile="basic_review",
+            tofile=str(args.output),
         )
-        diff_path = (
-            args.output.with_suffix(".diff.txt")
-            if args.output
-            else args.input.with_suffix(".diff.txt")
-        )
-        diff_path.parent.mkdir(parents=True, exist_ok=True)
+        diff_path = args.output.with_suffix(".diff.txt")
         diff_path.write_text("".join(diff), encoding="utf-8")
         logging.getLogger(__name__).info("diff 已写出：%s", diff_path)
     return 0

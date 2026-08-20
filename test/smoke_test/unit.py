@@ -10,7 +10,11 @@ from .common import check, run_cli
 
 
 def test_unit_boundaries() -> None:
-    from exercise_extractor.parse_md_exercises import split_exercises
+    from exercise_extractor.parse_md_exercises import (
+        filter_exercises_by_section,
+        normalize_section,
+        split_exercises,
+    )
 
     check("空内容返回空列表", split_exercises("") == [])
     exs = split_exercises("## 习题\n\n### 小节\n")
@@ -39,6 +43,29 @@ def test_unit_boundaries() -> None:
     )
     e = split_exercises("1.1.1 证明： (a) x\n")[0]
     check("纯证明题题干保留", e.get("solution_steps", "") == "")
+    check(
+        "目录与 OCR 区间横线归一化",
+        normalize_section("习题 1–5") == normalize_section("习题1-5"),
+    )
+    exs = split_exercises("## 习题1-5\n1. 一\n2. 二\n")
+    check(
+        "区间横线差异不误删习题",
+        len(filter_exercises_by_section(exs, "习题 1–5")) == 2,
+    )
+    from exercise_extractor.extraction import extract_exercises
+
+    section = {
+        "title": "习题 1–5",
+        "has_exercise": True,
+        "exercise_content": "<!-- page: 60 -->\n## 习题1-5\n1. 一\n2. 二\n",
+        "boundary_page": 60,
+        "children": [],
+    }
+    extract_exercises([section])
+    check(
+        "区间横线差异不触发边界页误截断",
+        len(section.get("exercises", [])) == 2,
+    )
 
 
 def test_toc_and_boundaries() -> None:
@@ -183,6 +210,42 @@ def test_answers_match() -> None:
     )
     check("已有内联答案不被覆盖", exs[0]["answer"] == "内联答案")
 
+    from exercise_extractor import match_answers
+
+    public_section = {
+        "document_name": "测试书",
+        "title": "第1章习题",
+        "path": "第一章/第1章习题",
+        "has_exercise": True,
+        "exercise_page_range": [1, 2],
+        "implicit": False,
+        "tail_search_used": False,
+        "exercises": [
+            {
+                "number": "1",
+                "content": "题目",
+                "answer": "",
+                "solution_steps": "",
+                "question_type": "short_answer",
+                "pages": [],
+            }
+        ],
+    }
+    answer_section = {
+        "title": "习题答案",
+        "answer_sections": [
+            {"title": "第1章", "answers": [{"number": "1", "content": "答案"}]}
+        ],
+    }
+    matched = match_answers([public_section], answer_section)
+    check(
+        "公共 match_answers 返回新 section list",
+        matched[0]["exercises"][0]["answer"] == "答案"
+        and matched[0]["answer_match"]["count_match"] is True
+        and "children" not in matched[0]
+        and public_section["exercises"][0]["answer"] == "",
+    )
+
 
 def test_html_tables() -> None:
     from exercise_extractor.html_tables import (
@@ -259,12 +322,14 @@ def test_tail_search_title_stays_out_of_json() -> None:
     }
     with tempfile.TemporaryDirectory() as out_dir, tempfile.TemporaryDirectory() as md_dir:
         write_outputs([section], out_dir, md_dir)
-        with open(os.path.join(out_dir, "exercises.json"), encoding="utf-8") as f:
+        with open(os.path.join(out_dir, "17_1.1_Review_of_Functions.json"), encoding="utf-8") as f:
             payload = json.load(f)
         check(
-            "节尾搜索 title 不写进 exercises.json",
-            payload[0]["title"] == "1.1 Review of Functions",
-            payload[0]["title"],
+            "节尾搜索 title 不写进 section JSON",
+            payload["title"] == "1.1 Review of Functions"
+            and payload["path"] == "1.1 Review of Functions"
+            and payload["tail_search_used"] is True,
+            payload.get("title"),
         )
         check(
             "节尾搜索后缀只保留在 markdown 文件名",
@@ -316,17 +381,59 @@ def test_api_contract() -> None:
     except FileNotFoundError:
         check("extract_exercise 入参校验即时抛错", True)
 
+    from unittest.mock import patch
+
+    internal_nodes = [
+        {
+            "title": "第一章",
+            "children": [
+                {
+                    "title": "习题一",
+                    "has_exercise": True,
+                    "exercise_page_range": [3, 4],
+                    "_section_path": "第一章/习题一",
+                    "exercises": [
+                        {
+                            "number": "1",
+                            "content": "题目",
+                            "answer": "",
+                            "solution_steps": "",
+                        }
+                    ],
+                }
+            ],
+        }
+    ]
+    with patch(
+        "exercise_extractor.api.iter_sections",
+        return_value=iter([internal_nodes[0]["children"][0]]),
+    ):
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+            f.write(b"%PDF-1.4 fake minimal")
+            public_pdf = f.name
+        try:
+            sections = list(extract_exercise(public_pdf, model_dir="/tmp/models"))
+        finally:
+            os.unlink(public_pdf)
+    check(
+        "extract_exercise 返回扁平公共 section",
+        len(sections) == 1
+        and sections[0]["path"] == "第一章/习题一"
+        and "children" not in sections[0],
+    )
+
 
 def test_llm_review_contract() -> None:
     """LLM 审校接口只改文本并按题目追加状态，工具轮次可控。"""
     from exercise_extractor.review import (
         DEFAULT_REVIEW_BASE_URL,
         DEFAULT_REVIEW_MODEL,
+        review_basic,
         review_markdown_basic,
         review_markdown_with_tools,
     )
 
-    check("审校默认模型", DEFAULT_REVIEW_MODEL == "qwen3.7-max")
+    check("审校默认模型", DEFAULT_REVIEW_MODEL == "qwen3.7-max-2026-05-17")
     check(
         "审校默认地址与目录识别一致",
         DEFAULT_REVIEW_BASE_URL
@@ -350,6 +457,34 @@ def test_llm_review_contract() -> None:
     )
     check("基础审校保留题目结构", "*1.* 题目，内容" in reviewed)
     check("基础审校不追加逐题状态", "审校状态：" not in reviewed)
+
+    section = {
+        "document_name": "测试书",
+        "title": "习题1",
+        "path": "第一章/习题1",
+        "has_exercise": True,
+        "exercise_page_range": [1, 2],
+        "implicit": False,
+        "tail_search_used": False,
+        "exercises": [
+            {
+                "number": "1",
+                "content": "题目，内容",
+                "answer": "",
+                "solution_steps": "$x$",
+                "question_type": "short_answer",
+                "pages": [],
+            }
+        ],
+    }
+    reviewed_section = review_basic(section, client=basic_client)
+    check(
+        "公共 review_basic 返回 section JSON",
+        isinstance(reviewed_section, dict)
+        and reviewed_section["path"] == "第一章/习题1"
+        and "children" not in reviewed_section
+        and reviewed_section["content"]["basic_review"],
+    )
 
     tool_call = SimpleNamespace(
         id="call-1",
@@ -398,8 +533,8 @@ def test_llm_review_contract() -> None:
 
 
 def test_review_removes_supplemented_answers() -> None:
-    """模型新增的解/答段不触发回退，原有答案仍保留。"""
-    from exercise_extractor.review import remove_review_statuses, review_markdown_basic
+    """公共 basic review 删除模型给无答案题补出的解/答段。"""
+    from exercise_extractor.review import review_basic
 
     content = (
         "*1.* 求 $x$。\n\n"
@@ -423,12 +558,22 @@ def test_review_removes_supplemented_answers() -> None:
             )
         ]
     )
-    reviewed = review_markdown_basic(
-        content, "测试书", "习题1", client=client
-    )
-    visible = reviewed
-    check("保留模型补出的答案", "模型根据题目补出的答案" in visible)
-    check("保留部分答案后的补答", "模型补出的答案" in visible)
+    section = {
+        "document_name": "测试书",
+        "title": "习题1",
+        "path": "习题1",
+        "has_exercise": True,
+        "exercise_page_range": [1, 2],
+        "exercises": [
+            {"number": "1", "content": "求 $x$。", "answer": "", "solution_steps": ""},
+            {"number": "2", "content": "求 $y$。", "answer": "", "solution_steps": "原解答"},
+            {"number": "3", "content": "求 $z$。", "answer": "原答案", "solution_steps": ""},
+        ],
+    }
+    reviewed = review_basic(section, client=client)
+    visible = reviewed["content"]["basic_review"]
+    check("删除无答案题的模型补答", "模型根据题目补出的答案" not in visible)
+    check("删除部分答案题的模型补答", "模型补出的答案" not in visible)
     check("保留原题已有解答", "原解答（格式修复）" in visible)
     check("保留原题已有答案", "原答案（格式修复）" in visible)
     check(
@@ -516,16 +661,22 @@ def test_cli_review_skips_answer_nodes() -> None:
     )
     calls = []
 
-    def fake_basic(content, *rest, **kwargs):
+    def fake_basic(section, *rest, **kwargs):
         calls.append("basic")
-        return content
+        reviewed = dict(section)
+        reviewed["content"] = {
+            "original": section["content"]["original"],
+            "basic_review": section["content"]["original"],
+            "tool_review": section["content"]["original"],
+        }
+        return reviewed
 
     def fake_tools(content, *rest, **kwargs):
         calls.append("tools")
         return content
 
     completed = []
-    with patch.object(cli_main, "review_markdown_basic", fake_basic), patch.object(
+    with patch.object(cli_main, "review_basic", fake_basic), patch.object(
         cli_main, "review_markdown_with_tools", fake_tools
     ):
         cli_main._review_sections(
@@ -767,9 +918,10 @@ def test_full_cache_pipeline() -> None:
         with open(os.path.join(outdir, "report.json"), encoding="utf-8") as f:
             report = json.load(f)
         check("全缓存报告可解析", report["total_exercises"] > 0)
-        with open(os.path.join(outdir, "exercises.json"), encoding="utf-8") as f:
-            data = json.load(f)
         check(
-            "全缓存 exercises.json 结构完整",
-            isinstance(data, list) and len(data) > 0,
+            "全缓存 section JSON 结构完整",
+            any(
+                name.endswith(".json") and name != "report.json"
+                for name in os.listdir(outdir)
+            ),
         )

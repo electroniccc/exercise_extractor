@@ -15,6 +15,7 @@
 
 import os
 import re
+from copy import deepcopy
 from typing import TypedDict
 
 from .parse_md_exercises import (
@@ -159,8 +160,9 @@ def _collect_exercise_targets(sections) -> list[dict]:
             if not exercises:
                 return
             title = node["title"]
+            node_path = node.get("path") or path
             chapter = (
-                extract_chapter_number(path)
+                extract_chapter_number(node_path)
                 or extract_chapter_number(title)
             )
             if chapter is None:
@@ -170,7 +172,7 @@ def _collect_exercise_targets(sections) -> list[dict]:
             targets.append(
                 {
                     "title": title,
-                    "path": path,
+                    "path": node_path,
                     "chapter": chapter,
                     "count": len(exercises),
                     "implicit": bool(node.get("implicit")),
@@ -183,6 +185,66 @@ def _collect_exercise_targets(sections) -> list[dict]:
     for s in sections:
         walk(s, s["title"])
     return targets
+
+
+def match_answers(
+    sections: list[dict], answer_section: dict
+) -> list[dict]:
+    """匹配一个答案章节 JSON，并返回填充答案后的 section JSON 列表。
+
+    ``sections`` 必须是扁平公共 section 列表；``answer_section`` 是一个完整
+    答案章节 object，包含 ``answer_sections`` 数组。函数不修改调用方传入的
+    对象，匹配不到答案的 section 原样返回。
+    """
+    from .public_schema import normalize_public_section, public_section_from_node
+
+    if not isinstance(sections, list):
+        raise TypeError("sections 必须是 JSON array（Python list）")
+    if not isinstance(answer_section, dict):
+        raise TypeError("answer_section 必须是 JSON object（Python dict）")
+    answer_blocks = answer_section.get("answer_sections")
+    if not isinstance(answer_blocks, list):
+        # 允许调用方直接传一个已经切好的答案块，便于单节调试；正式输出
+        # 仍推荐使用完整答案章节的 answer_sections 数组。
+        if isinstance(answer_section.get("answers"), list):
+            answer_blocks = [answer_section]
+        else:
+            raise ValueError("answer_section.answer_sections 必须是 JSON array")
+
+    copied_sections = [normalize_public_section(section) for section in deepcopy(sections)]
+    copied_blocks = deepcopy(answer_blocks)
+    targets = collect_exercise_targets(copied_sections)
+    used: set[int] = set()
+
+    for index, target in enumerate(targets):
+        match_section_answers(copied_blocks, targets, index, used)
+        node = target["node"]
+        # match_section_answers 将临时 answer_section 挂到 node 上；把公开的
+        # 诊断信息固化后再清理临时字段。
+        matched = node.pop("answer_section", None)
+        if matched is None:
+            node["answer_match"] = {
+                "matched": False,
+                "count_match": False,
+                "source_path": None,
+                "matched_count": None,
+            }
+        else:
+            node["answer_match"] = {
+                "matched": True,
+                "count_match": bool(matched.get("count_match", False)),
+                "source_path": matched.get("matched_path") or matched.get("title"),
+                "matched_count": matched.get("matched_count"),
+            }
+
+    return [
+        public_section_from_node(
+            section,
+            path=section.get("path"),
+            document_name=section.get("document_name"),
+        )
+        for section in copied_sections
+    ]
 
 
 def match_answer_sections(
@@ -239,6 +301,12 @@ def match_answer_sections(
             sec["count_match"] = (
                 _effective_answer_count(sec["answers"]) == t["count"]
             )
+            t["node"]["answer_match"] = {
+                "matched": True,
+                "count_match": bool(sec["count_match"]),
+                "source_path": sec.get("matched_path") or sec.get("title"),
+                "matched_count": sec.get("matched_count"),
+            }
             # 临时挂到习题节点上，供后续 fill_exercise_answers 逐题填充用
             # （填充完成后会从节点上移除，不留在最终输出里）
             t["node"]["answer_section"] = sec
@@ -372,6 +440,12 @@ def match_section_answers(
     sec["matched_path"] = target["path"]
     sec["matched_count"] = target["count"]
     sec["count_match"] = _effective_answer_count(sec["answers"]) == target["count"]
+    target["node"]["answer_match"] = {
+        "matched": True,
+        "count_match": bool(sec["count_match"]),
+        "source_path": sec.get("matched_path") or sec.get("title"),
+        "matched_count": sec.get("matched_count"),
+    }
     # 临时挂载到习题节点，供 fill_exercise_answers 逐题填充
     target["node"]["answer_section"] = sec
     fill_exercise_answers([target["node"]])

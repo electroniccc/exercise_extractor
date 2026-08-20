@@ -61,11 +61,13 @@ def test_textbook_fake_cache() -> None:
             "md 输出含解/答",
             "解：解答一" in text and "答：答案二" in text,
         )
-        with open(os.path.join(outdir, "exercises.json"), encoding="utf-8") as f:
+        with open(os.path.join(outdir, "1_习题_1-1.json"), encoding="utf-8") as f:
             data = json.load(f)
         check(
-            "exercises.json 含习题节点",
-            data[0]["exercises"][0]["content"].startswith("第一题"),
+            "每节 JSON 含公共 section",
+            data["path"] == "习题 1-1"
+            and "children" not in data
+            and data["exercises"][0]["content"].startswith("第一题"),
         )
 
 

@@ -1,4 +1,4 @@
-"""提取管线的可复用编排：CLI（main.py）与对外 API（api.extract_pdf）共用。"""
+"""提取管线的可复用编排：CLI 与公共 JSON API 共用。"""
 
 import argparse
 import logging
@@ -10,7 +10,12 @@ from .html_tables import replace_html_tables
 from .ocr import build_sections, create_ocr_pipeline, ocr_pages
 from .oss import apply_oss_images, oss_config_from_args
 from .parse_md_exercises import normalize_section
-from .postprocess import print_summary, write_outputs
+from .postprocess import (
+    print_summary,
+    write_outputs,
+    write_section_json,
+    write_section_markdown,
+)
 from .utils import compute_file_hash
 
 logger = logging.getLogger(__name__)
@@ -39,7 +44,7 @@ def run_pipeline(
     write_outputs_enabled: bool = True,
     print_summary_enabled: bool = True,
 ) -> list:
-    """执行完整提取链，返回习题节点树（与 exercises.json 同结构）。
+    """执行完整提取链，返回内部习题节点树（仅供 CLI/适配层使用）。
 
     args 需要字段：input / output / ocr_cache / model_dir / vl_server_url /
     vl_model / doc_type。output 为 None 时只做提取、不落盘输出文件。
@@ -86,7 +91,12 @@ def run_pipeline(
     if write_outputs_enabled:
         if not args.output:
             raise ValueError("write_outputs=True 时需要提供 output_dir")
-        report = write_outputs(exercise_sections, args.output, markdown_path)
+        report = write_outputs(
+            exercise_sections,
+            args.output,
+            markdown_path,
+            document_name=os.path.splitext(os.path.basename(args.input))[0],
+        )
         if print_summary_enabled:
             print_summary(report)
             print(f"输出目录: {os.path.abspath(args.output)}")
@@ -161,12 +171,17 @@ def iter_sections(
     collect_titles(exercise_sections)
 
     # 3) 按树序逐节 OCR → 拼页 → 切分 → 回填答案 → yield
+    document_name = os.path.splitext(os.path.basename(args.input))[0]
+
     def walk(nodes: list, path: str):
         for node in nodes:
-            node_path = f"{path} › {node['title']}" if path else node["title"]
+            node_path = f"{path}/{node['title']}" if path else node["title"]
+            node["_section_path"] = node_path
             if node.get("is_answers"):
                 if oss_cfg:
                     apply_oss_images([node], markdown_path, oss_cfg, oss_cache)
+                if write_outputs_enabled:
+                    write_section_markdown(node, args.output)
                 yield node
                 yield from walk(node.get("children", []), node_path)
                 continue
@@ -189,18 +204,31 @@ def iter_sections(
                     )
                 if oss_cfg:
                     apply_oss_images([node], markdown_path, oss_cfg, oss_cache)
+                if write_outputs_enabled:
+                    write_section_markdown(node, args.output)
+                    write_section_json(
+                        node,
+                        args.output,
+                        path=node_path,
+                        document_name=document_name,
+                    )
                 yield node
             yield from walk(node.get("children", []), node_path)
 
-    for section_node in exercise_sections:
-        yield from walk([section_node], section_node["title"])
+    yield from walk(exercise_sections, "")
 
     # 4) 流式结束：清理临时挂载，按需落盘
     def cleanup(nodes: list) -> None:
         for n in nodes:
             n.pop("answer_section", None)
+            n.pop("_section_path", None)
             cleanup(n.get("children", []))
 
     cleanup(exercise_sections)
     if write_outputs_enabled:
-        write_outputs(exercise_sections, args.output, markdown_path)
+        write_outputs(
+            exercise_sections,
+            args.output,
+            markdown_path,
+            document_name=document_name,
+        )

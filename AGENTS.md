@@ -8,7 +8,7 @@
 |---|---|
 | `exercise_extractor/main.py` | 主入口与 CLI（argparse）：解析参数后走 pipeline，安装后可用 `python -m exercise_extractor` 调用 |
 | `exercise_extractor/pipeline.py` | 可复用提取管线：`run_pipeline` 整树一次处理（CLI 用）、`iter_sections` 流式逐节处理（对外 API 用）：答案节点先 OCR 切块，再按树序逐节 OCR → 拼页 → 切分 → 回填答案 → yield |
-| `exercise_extractor/api.py` | 对外公共 API `extract_exercise(source, source_type="pdf", doc_type, ...)`：输入 PDF 路径，返回**按节流式产出**的迭代器（每完成一个 section 就 yield 一个，与 exercises.json 节点同结构）；OCR 引擎参数（vl_rec_backend/vl_rec_server_url/vl_rec_max_concurrency/vl_rec_api_model_name）与 ocr/toc 的 engine/device（ocr_device/ocr_engine/toc_device/toc_engine）全部可配；预留 source_type 扩展 image/markdown |
+| `exercise_extractor/api.py` | 对外公共 API `extract_exercise(source, source_type="pdf", doc_type, ...)`：输入 PDF 路径，返回**按节流式产出**的迭代器（每完成一个有编号习题的 section 就 yield 一个不含 `children` 的扁平公共 JSON object，section 用 `path` 记录目录树路径）；OCR 引擎参数（vl_rec_backend/vl_rec_server_url/vl_rec_max_concurrency/vl_rec_api_model_name）与 ocr/toc 的 engine/device（ocr_device/ocr_engine/toc_device/toc_engine）全部可配；预留 source_type 扩展 image/markdown |
 | `exercise_extractor/__main__.py` | `python -m exercise_extractor` 调试入口（等价于仓库根 `python main.py`） |
 | `exercise_extractor/oss.py` | OSS/MinIO 图片上传：传 oss_* 参数（endpoint/access_key/secret_key/bucket）时，把 markdown 里的本地图片上传并把 src 替换为 OSS 公开 URL；缺配置完全不生效 |
 | `exercise_extractor/ocr.py` | 目录识别（build_sections，toc_forge + 阿里云 vLLM）与 OCR（ocr_pages，PaddleOCR-VL） |
@@ -19,7 +19,8 @@
 | `exercise_extractor/toc_detect.py` | 纯目录树判断：习题章节识别、前后置内容跳过、是否启用节尾搜索 |
 | `exercise_extractor/answers.py` | 习题答案章节：按小标题切分答案、与习题节点匹配（含题数校验） |
 | `exercise_extractor/html_tables.py` | HTML 表格工具：检测严格闭合的 HTML 表格（detect_html_table）、转 markdown 表格（html_table_to_markdown） |
-| `exercise_extractor/postprocess.py` | 后处理：统计报告（collect_report）、导出 md/JSON（write_outputs）、控制台摘要（print_summary） |
+| `exercise_extractor/postprocess.py` | 后处理：统计报告（collect_report）、导出每节 md/JSON 与 report.json（write_outputs）、控制台摘要（print_summary） |
+| `exercise_extractor/public_schema.py` | 内部目录树到扁平公共 section JSON 的适配层，固定 section/Exercise 字段并移除 `children` 与临时字段 |
 | `exercise_extractor/review/` | Markdown 习题 LLM 审校包：`basic_review.py` 负责基础标点/KaTeX 修复，`math_review.py` 保留后续 SymPy 工具核验（OpenAI-compatible） |
 | `exercise_extractor/utils.py` | 基础工具：页面转图像、文件 SHA256 哈希、markdown 块公式修复 |
 | `main.py`（仓库根） | 兼容入口 shim：`python main.py ...` 等价于 `python -m exercise_extractor ...` |
@@ -35,7 +36,7 @@
 3. **combine_section_pages**（extraction.py）：把每节若干页 markdown 拼接，页间插入 `<!-- page: N -->` 标记供页码溯源。
 4. **extract_exercises**（extraction.py）：切分、按小节过滤、处理隐式节尾习题、题号重排为 1,2,3…（原题号保留在 `original_number`）。
 5. **answers.extract_and_match**：对 `is_answers` 节点拼页、按小标题切块、与习题节点匹配并校验题数，结果写入 `node["answer_sections"]`。
-6. **write_outputs**（postprocess.py）：导出每节一个 markdown（题号用 `*N.*` 行内斜体）、`exercises.json`（完整数据）、`report.json`（统计报告）。
+6. **write_outputs**（postprocess.py）：导出每节一个 markdown（题号用 `*N.*` 行内斜体）、同名 section JSON（不含 `children`）和 `report.json`（统计报告）；不再写总的 `exercises.json`。
 
 exampaper 分支不经过第 1/5 步：`build_sections` 直接返回整卷节点（不跑 toc_forge），`ocr_pages` 全量 OCR，`exampaper.extract_exercises` 按题型小节切分并处理答案。
 
@@ -49,9 +50,10 @@ exampaper 分支不经过第 1/5 步：`build_sections` 直接返回整卷节点
 - `answer` / `solution_steps`：每个习题都带这两个属性（无内容时为空字符串）。`answer` 来自题干后面的答案段（行首 `答：`/`答:`/`[答]`/`（答）` 起到题目结束）；`solution_steps` 来自行首 `解：`/`解:`/`[解]`/`（解）` 起的解答过程段（裸"解"必须有冒号，避免误判"解析/解决/解释"；带括号的写法无歧义）。两者都从 `content` 中切出单独存放，markdown 输出时以 `解：`/`答：` 单独成段写回。
 - `question_type`：三类流程都会提供的标准英文题型枚举。课本/习题集统一默认为 `short_answer`；试卷按题型小节填写：`single_choice`（单选题，普通“选择题”默认单选）/ `multiple_choice`（多选题）/ `fill_in_blank`（填空题）/ `short_answer`（简答题，含解答/计算/应用题及无题型词的旧式小节兜底）/ `proof`（证明题）。`section_key` 仍仅试卷习题带：它是归一化题型小节键（保留中文，如 `一、选择题`/`二`），用于答案区回填。
 
-### SectionNode（main.py）
+### SectionNode（内部）与公共 Section JSON
 
 - `title`、`has_exercise`、`children`；习题节点含 `exercise_page_range: [start, end)`；隐式节尾习题节点带 `implicit: True`；切分后写入 `exercise_content` 与 `exercises`。CLI 开启 `--review` 后，习题节点额外写入 `content: {original, basic_review, tool_review}`，且 `exercises` 与 Markdown 输出使用最终审校版本；答案节点不单独审校。
+- 对外不暴露这棵树。`extract_exercise` 流式返回扁平公共 section JSON：每个有编号习题的节点单独返回，带 `document_name`、`title`、`path`、页码、`exercises`、审校版本和答案匹配信息，不带 `children`、`exercise_content` 等内部字段。
 
 ### Report（main.py）
 
@@ -68,7 +70,7 @@ exampaper 分支不经过第 1/5 步：`build_sections` 直接返回整卷节点
 - **题干/解答过程/答案分离**：习题内容里行首 `答：`/`[答]` 起的段落切到 `answer`、行首 `解：`/`解.`/`解．`/`解 `（空格）/`[解]` 及**独立成段的 `证明.`/`证明：`/`证.`/`证：`**切到 `solution_steps`（`content` 只留题干）。**"证明"多标记规则**：内容里有多个行首"证明/证"标记时，题干中靠前的"证明：…"是要证的结论，解答以**最后一个**"证明/证"开头，从它切起；只有一个标记且是题干第一个非空行时不切（纯证明题题干，如 `1.1.1 证明： (a)...`）；只有一个标记但不是第一个非空行时切（超甜风格：题尾独立解答）。每个习题都保证带这两个属性、无内容为空字符串；markdown 输出时以 `解：`/`答：` 单独成段写回。负向断言排除"答案/答题/答 案/证明题"等字样。
 - **配图按图注回插**：切分前先把内容里的 `<img>` 行抽走并按**图片下方的图注**归类（支持 `图 2-12`、`补充例题1.3题图` 等格式，默认图注在图片下方，同一图注下的多张子图归到一起；夹在子图之间的短标签行如 `(a)(b)(c)(d)` 也随图组走），图注位置留占位标记（`<!-- figure: 键 -->`）；切分完成后**两遍回插**：第一遍按题干里的"图N-M"引用插到引用行之后（引用优先），第二遍把未被引用的图按占位标记位置兜底插回（如理论力学"补充例题1.3题图"在 [解] 流程中间、题干不引用图号）。占位标记无论是否附图都不留在最终内容里。
 - **HTML 表格转 markdown 表格**：提取完习题后，对习题与答案内容里的 HTML 表格做检测（内部标签严格闭合才转换）并替换成 markdown 风格表格，否则单元格内的 LaTeX（`$...$`）在多数预览器下无法渲染。模块：`html_tables.py`（`detect_html_table` / `html_table_to_markdown` / `replace_html_tables`）。
-- **节尾搜索（textbook 模式）**：`should_use_tail_search` 统计目录中普通小节后有习题目录项的比例；若大多数小节没有目录项，则对每个小节末尾取 3 页建隐式习题节点。提取后要求题号基本连续、剔除 `__preamble__` 和归属为其他已知小节的内容，防止把正文/下一节内容当习题。本次运行是否启用节尾搜索会以 `tail_search_used` 字段写入每个节点（exercises.json 可查；隐式节点另带 `implicit: True`）。
+- **节尾搜索（textbook 模式）**：`should_use_tail_search` 统计目录中普通小节后有习题目录项的比例；若大多数小节没有目录项，则对每个小节末尾取 3 页建隐式习题节点。提取后要求题号基本连续、剔除 `__preamble__` 和归属为其他已知小节的内容，防止把正文/下一节内容当习题。本次运行是否启用节尾搜索会以 `tail_search_used` 字段写入每个公共 section（隐式节点另带 `implicit: True`）。
 - **习题区间含边界页 + 边界标题截断**：隐式节点和显式习题节点的页码范围都含下一目录节点的起始页（不少教材把习题印到下一节标题所在页顶部，如高数习题1-1 的 17/18 题在"第二节"标题页、梁昆淼的节尾习题）；提取时找到边界节点的标题行（`boundary_title`）即截断其后的内容，避免把下一节的内容误当本节习题。**兜底**：目录标题与页内标题写法可能不一致（如目录 "2 连续函数" vs 页内 "## 第2章 连续函数"），标题匹配失败时按 `boundary_page`（节点上记录）定位，用 `truncate_before_page_heading` 截到该页第一个标题行之前。
 - **隐式节点丢弃 leading**：节尾区间刻意从上一节正文/上一题解答的中段开始，`split_exercises(keep_leading=False)` 丢弃第一道题前的正文（如上一道补充例题的解答尾巴），不拼进第一题；显式节点保持默认拼接行为。
 - **小结/总结/参考书节点跳过**：目录树里标题含「小结/总结/参考书（含参考书目/主要参考书/参考文献）」的节点完全跳过，不建节尾习题节点——小结常是连续数字编号的短段落（参考系定义、开普勒定律等），参考书是书目列表，符合题号特征但不是习题（如周衍柏《理论力学教程》各章小结、林宗涵《热力学与统计物理学习题解答》的"主要参考书"）。
@@ -119,7 +121,7 @@ for section in extract_exercise(
 
 `extract_exercise` 默认只返回数据不落盘（迭代器，可提前中断）；
 `write_outputs=True` 且给 `output_dir`
-时会额外写出 md / exercises.json / report.json。OCR 需要本地 vllm-server
+时会额外写出每节 md / section JSON / report.json，不写总的 exercises.json。OCR 需要本地 vllm-server
 （默认 `http://localhost:8080/v1`；llama.cpp+GGUF 已弃用，见“OCR 后端”），`toc_forge` 为本地依赖，
 安装时若 pip 找不到可先 `--no-deps` 再用已有环境。`model_dir` 不内置机器
 路径：显式传入，或设置环境变量 `EXERCISE_EXTRACTOR_MODEL_DIR`。旧接口名
@@ -127,39 +129,42 @@ for section in extract_exercise(
 参数的旧别名（后续移除）。`source_type` 当前仅支持 `"pdf"`，后续扩展
 图片/markdown 时在 `api.SUPPORTED_SOURCE_TYPES` 与分发逻辑中增加。
 
-### Markdown LLM 审校接口
+公共接口的数据边界是严格固定的 JSON 结构：调用方只能向
+`extract_exercise`、`match_answers`、`review_basic` 传入 Python 中可直接
+JSON 序列化的 `dict`/`list`（或 PDF 路径这一明确的源文件参数），不能传入
+内部 `SectionNode`、Markdown 字符串或其它临时对象；接口返回值也只能是固定
+schema 的 Python `dict`/`list`（`extract_exercise` 为逐节 yield 的 dict，
+`match_answers` 为 section dict 列表，`review_basic` 为单个 section dict）。
+公共 section JSON 不含 `children`、`exercise_content` 等内部字段；新增字段必须
+同步更新公共 schema 与测试，不能把内部临时字段直接泄漏给调用方。
+
+### 公共 JSON LLM 审校接口
 
 ```python
-from exercise_extractor import review_markdown_basic, review_markdown_with_tools
+from exercise_extractor import extract_exercise, match_answers, review_basic
 
-fixed = review_markdown_basic(
-    markdown_content, "同济高等数学（上册）", "习题1-1",
+sections = list(extract_exercise("xxx.pdf", doc_type="textbook"))
+sections = match_answers(sections, answer_section_json)
+fixed = review_basic(
+    sections[0],
     base_url="https://api.openai.com/v1", api_key="...", model="...",
-)
-checked = review_markdown_with_tools(
-    fixed, "同济高等数学（上册）", "习题1-1",
-    base_url="http://localhost:8000/v1", api_key="EMPTY", model="...",
-    max_rounds=5,
 )
 ```
 
-两个接口默认使用阿里云 OpenAI-compatible 地址和 `qwen3.7-max`，也可以在调用时
-传 `base_url`、`api_key`、`model` 覆盖。两个接口都以整节 Markdown 为一次审校单位；basic review 要求模型直接返回纯 Markdown，不输出逐题审校状态。第一轮按模板校对 OCR 文字、标点与 KaTeX/LaTeX 格式。数学审校模块暂时只保留、不继续开发；第二轮最多 5 轮对话按需调用受限 SymPy 工具核验；每轮可批量调用多个
-SymPy 工具，达到轮数上限时保留已完成的部分修复。CLI 的 `--review` 默认暂时只执行第一轮基础审校，
+`match_answers` 接受公共 section JSON 列表和完整答案 section JSON，返回新的填充后列表；`review_basic` 接受一个公共 section JSON，返回新的审校后 section JSON。两个接口默认使用阿里云 OpenAI-compatible 地址和 `qwen3.7-max-2026-05-17`，也可以在调用时
+传 `base_url`、`api_key`、`model` 覆盖。内部仍以整节 Markdown 调用 LLM，但 Markdown 不再是公共接口格式；basic review 按模板校对 OCR 文字、标点与 KaTeX/LaTeX 格式。数学审校模块暂时只保留、不继续开发；CLI 的 `--review` 默认暂时只执行第一轮基础审校，
 加 `--review-with-tools` 才启用第二轮数学审校；`--review-max-rounds` 仅在启用工具审校时生效。也可通过
 `OPENAI_BASE_URL`、`OPENAI_API_KEY`（或 `ALIYUN_API_KEY`）提供默认地址和密钥；
-接口异常或没有返回 Markdown 时直接抛出错误。CLI 使用 `--review` 开启审校，并可用
+接口异常、空响应或无法切回有效 section 时直接抛出错误。CLI 使用 `--review` 开启审校，并可用
 `--review-base-url`、`--review-api-key`、`--review-model`、`--review-max-rounds` 覆盖配置。
 小节审校默认以 5 个线程并发执行，可用 `--review-concurrency` 调整（例如 3）；结果仍按
 目录树原顺序写回，服务端有并发/限流上限时应调低该值。
-并发任务每完成一个小节就立即写出对应 Markdown 文件；全部审校结束后再完整写出
-`exercises.json` 和 `report.json`。
+并发任务每完成一个小节就立即写出对应 Markdown 和 section JSON 文件；全部审校结束后再完整写出
+`report.json`。
 CLI 只审校习题节点；答案章节不再单独调用 LLM，因为习题 Markdown 已经包含对应的解/答。
-两轮审校都必须逐题保持原有的 `解：/答：` 标记数量、顺序和归属；没有解答的题目不得补写解答，
-客户端会按题逐题检查这一结构并记录警告，但不会因结构或数学字面量差异回退模型结果；
-即使模型仍然给无答案题补写了解答，也会依据原始答案掩码自动删除补出的解答，保留其他可用的格式修复。
+审校失败直接抛出错误，不 fallback；题数变化、低相似度等质量问题记录到 section 的 `review_warnings`，仍保留模型结果。没有解答的题目不得补写解答；即使模型仍然给无答案题补写了解答，也会依据原始答案掩码自动删除补出的解答，保留其他可用的格式修复。
 开启 `--review` 时 CLI 默认输出 INFO 日志，可看到每个小节的开始/完成、模型轮次、
-SymPy 工具调用和失败回退；日志不会输出题目正文或 API key。
+SymPy 工具调用和质量警告；日志不会输出题目正文或 API key。
 
 依赖：`pymupdf`、`toc_forge`、`paddleocr`（PaddleOCRVL）、`cv2`、`numpy`、`Pillow`。目录识别需要 `ALIYUN_API_KEY` 环境变量；OCR 需要本地 vllm-server（默认 8080）。
 
