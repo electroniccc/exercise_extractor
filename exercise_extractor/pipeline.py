@@ -157,9 +157,8 @@ def iter_sections(
         node["answer_sections"] = secs
         answer_sections_all.extend(secs)
 
-    # 2) 预计算全树 targets 与已知小节名，保证与整树一次提取行为一致
-    targets = answers.collect_exercise_targets(exercise_sections)
-    used_answer: set[int] = set()
+    # 2) 预计算已知小节名。公共 JSON API 在答案节点到达后由调用方统一
+    # 调用 match_answers；CLI 仍在 run_pipeline 中做整树答案匹配。
     known_sections: set[str] = set()
 
     def collect_titles(nodes: list) -> None:
@@ -194,14 +193,6 @@ def iter_sections(
                     exampaper.extract_exercises([node])
                 else:
                     extract_exercises([node], known_sections=known_sections)
-                target_index = next(
-                    (j for j, t in enumerate(targets) if t["node"] is node),
-                    None,
-                )
-                if target_index is not None:
-                    answers.match_section_answers(
-                        answer_sections_all, targets, target_index, used_answer
-                    )
                 if oss_cfg:
                     apply_oss_images([node], markdown_path, oss_cfg, oss_cache)
                 if write_outputs_enabled:

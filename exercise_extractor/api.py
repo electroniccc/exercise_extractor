@@ -12,7 +12,10 @@ from types import SimpleNamespace
 from typing import Optional
 
 from .pipeline import iter_sections
-from .public_schema import public_section_from_node
+from .public_schema import (
+    public_answer_section_from_node,
+    public_section_from_node,
+)
 
 DEFAULT_VL_SERVER_URL = "http://localhost:8080/v1"
 DEFAULT_VL_REC_BACKEND = "vllm-server"
@@ -137,6 +140,13 @@ def extract_exercise(
 
     def public_sections() -> Iterator[dict]:
         for node in internal_sections:
+            if node.get("is_answers"):
+                yield public_answer_section_from_node(
+                    node,
+                    path=node.get("_section_path") or node.get("title"),
+                    document_name=document_name,
+                )
+                continue
             if not node.get("has_exercise"):
                 continue
             public = public_section_from_node(

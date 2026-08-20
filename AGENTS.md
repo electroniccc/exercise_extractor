@@ -119,7 +119,8 @@ for section in extract_exercise(
     print(section["title"], len(section["exercises"]), "题")
 ```
 
-`extract_exercise` 默认只返回数据不落盘（迭代器，可提前中断）；
+`extract_exercise` 默认只返回数据不落盘（迭代器，可提前中断；答案 section
+作为最后的固定 JSON 节点返回，供调用方传给 `match_answers`）；
 `write_outputs=True` 且给 `output_dir`
 时会额外写出每节 md / section JSON / report.json，不写总的 exercises.json。OCR 需要本地 vllm-server
 （默认 `http://localhost:8080/v1`；llama.cpp+GGUF 已弃用，见“OCR 后端”），`toc_forge` 为本地依赖，

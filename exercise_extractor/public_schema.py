@@ -32,7 +32,10 @@ def _review_content(node: dict[str, Any], original: str) -> dict[str, Any]:
     if not isinstance(source, dict):
         source = {}
     return {
-        "original": source.get("original") or original,
+        # exercises 可能刚经过 answer matching，必须用当前题目/答案重新
+        # 渲染 original；否则会出现 exercises.answer 已更新但 Markdown 仍
+        # 是匹配前旧内容的情况。
+        "original": original,
         "basic_review": source.get("basic_review"),
         "tool_review": source.get("tool_review"),
     }
@@ -80,6 +83,26 @@ def public_section_from_node(
         "content": _review_content(node, original),
         "answer_match": deepcopy(answer_match),
         "review_warnings": list(review_warnings),
+    }
+
+
+def public_answer_section_from_node(
+    node: dict[str, Any],
+    *,
+    path: str | None = None,
+    document_name: str | None = None,
+) -> dict[str, Any]:
+    """把内部答案节点投影成供公共 ``match_answers`` 使用的 JSON。"""
+    answer_sections = node.get("answer_sections")
+    if not isinstance(answer_sections, list):
+        answer_sections = []
+    return {
+        "document_name": document_name or node.get("document_name") or "",
+        "title": node.get("title") or "",
+        "path": path or node.get("path") or node.get("_section_path") or node.get("title") or "",
+        "is_answers": True,
+        "exercise_page_range": list(node.get("exercise_page_range") or []),
+        "answer_sections": deepcopy(answer_sections),
     }
 
 

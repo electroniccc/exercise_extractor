@@ -415,7 +415,7 @@ def combine_section_pages(
     """
 
     def walk(node: SectionNode) -> None:
-        if node.get("has_exercise"):
+        if node.get("has_exercise") or node.get("is_answers"):
             start_page, end_page = node["exercise_page_range"]
             exercise_content = ""
             for page_num in range(start_page, end_page):
