@@ -104,8 +104,15 @@ def collect_report(
     return report
 
 
-def render_exercise_markdown(node: SectionNode) -> str:
-    """把单个习题节点渲染成输出 Markdown（不含文件标题）。"""
+def render_exercise_markdown(
+    node: SectionNode, *, include_section_headings: bool = True
+) -> str:
+    """把单个习题节点渲染成 Markdown（不含文件标题）。
+
+    公共 section JSON 的 content 是纯题目序列，不需要重复携带小节标题，
+    因此公共 schema 调用时会关闭 ``include_section_headings``；CLI 文件输出
+    默认保留原有标题行为。
+    """
     if not node.get("has_exercise") or not node.get("exercises"):
         return ""
     chunks: list[str] = []
@@ -117,7 +124,7 @@ def render_exercise_markdown(node: SectionNode) -> str:
             continue
         section = item.get("section")
         section_norm = re.sub(r"\s+", "", section) if section else ""
-        if (
+        if include_section_headings and (
             section
             and section_norm != title_norm
             and section_norm != last_section

@@ -443,6 +443,7 @@ def test_api_contract() -> None:
                             "content": "题目",
                             "answer": "",
                             "solution_steps": "",
+                            "section": "第二章 随机变量及其分布",
                         }
                     ],
                 }
@@ -484,6 +485,10 @@ def test_api_contract() -> None:
         and sections[0]["is_answers"] is True
         and sections[1]["path"] == "第一章/习题一"
         and "children" not in sections[1],
+    )
+    check(
+        "section JSON content 不重复携带小节标题",
+        not sections[1]["content"]["original"].lstrip().startswith("## "),
     )
 
 

@@ -68,7 +68,11 @@ def public_section_from_node(
     # 延迟导入，避免 postprocess -> extraction -> public_schema 的循环导入。
     from .postprocess import render_exercise_markdown
 
-    original = render_exercise_markdown({**node, "exercises": exercises})
+    # 公共 content 是“题号 + 题目 + 解/答”的纯序列；section/title/path
+    # 已单独提供，不再把渲染时生成的 ``## ...`` 小节标题重复放进去。
+    original = render_exercise_markdown(
+        {**node, "exercises": exercises}, include_section_headings=False
+    )
     answer_match = node.get("answer_match")
     if not isinstance(answer_match, dict):
         answer_match = {
