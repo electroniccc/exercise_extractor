@@ -11,6 +11,15 @@ from copy import deepcopy
 from typing import Any
 
 
+def _is_numbered_exercise(item: dict[str, Any]) -> bool:
+    """只保留真正的习题编号，排除“例1/例题”等教材示例。"""
+    number = item.get("number")
+    if number in (None, "__preamble__"):
+        return False
+    normalized = str(number).strip().lower()
+    return not normalized.startswith(("例", "例题", "example"))
+
+
 def _public_exercise(item: dict[str, Any]) -> dict[str, Any]:
     """把内部 Exercise 归一化为固定字段的 JSON object。"""
     return {
@@ -51,7 +60,7 @@ def public_section_from_node(
     exercises = [
         _public_exercise(item)
         for item in node.get("exercises", [])
-        if item.get("number") not in (None, "__preamble__")
+        if _is_numbered_exercise(item)
     ]
     if not exercises:
         return None

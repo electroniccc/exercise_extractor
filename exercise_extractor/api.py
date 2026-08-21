@@ -141,6 +141,8 @@ def extract_exercise(
     def public_sections() -> Iterator[dict]:
         for node in internal_sections:
             if node.get("is_answers"):
+                # 答案节点是供调用方传给 match_answers 的固定 JSON section，
+                # 即使它没有 exercises 也必须保留。
                 yield public_answer_section_from_node(
                     node,
                     path=node.get("_section_path") or node.get("title"),

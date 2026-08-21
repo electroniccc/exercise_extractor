@@ -26,6 +26,7 @@ from .parse_md_exercises import (
     numbers_are_consecutive,
     page_marker,
     split_exercises,
+    split_solutions_for_section,
     truncate_before_heading,
     truncate_before_page_heading,
     truncate_to_section_heading,
@@ -508,6 +509,9 @@ def extract_exercises(
                 # 显式习题节点是已知的习题区域，解答里引用"定理 N"不应触发
                 # 小节结尾校验；只有隐式节尾节点（正文中挖题）保留该校验
                 check_section_end=node.get("implicit"),
+                # 课本普通习题节不默认把“证明：”当作解答；下面按整节
+                # 统计候选解答后再决定是否分离。
+                split_solutions=False,
             )
             # 隐式节尾习题节点没有对应目录标题，跳过小节过滤，保留该区间内所有编号题
             if not node.get("implicit"):
@@ -532,6 +536,11 @@ def extract_exercises(
                     [e["number"] for e in node["exercises"]]
                 ):
                     return None
+            split_solutions_for_section(
+                node["exercises"],
+                node.get("title") or parent_title,
+                doc_type="textbook",
+            )
             # 分离完成后，把配图按题干提到的“图N-M”插回对应习题
             attach_figures(node["exercises"], figures)
             # HTML 表格转 markdown 表格（单元格内 LaTeX 渲染问题）

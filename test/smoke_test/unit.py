@@ -13,6 +13,7 @@ def test_unit_boundaries() -> None:
     from exercise_extractor.parse_md_exercises import (
         filter_exercises_by_section,
         normalize_section,
+        split_solutions_for_section,
         split_exercises,
     )
 
@@ -65,6 +66,50 @@ def test_unit_boundaries() -> None:
     check(
         "区间横线差异不触发边界页误截断",
         len(section.get("exercises", [])) == 2,
+    )
+    proof_only = split_exercises(
+        "1. 试证明：结论成立。\n证明：这是题目要求。\n",
+        check_section_end=False,
+        split_solutions=False,
+    )
+    split_solutions_for_section(proof_only, "习题", doc_type="textbook")
+    check(
+        "普通课本节不把单个证明误切成解答",
+        proof_only[0]["solution_steps"] == ""
+        and "证明：这是题目要求" in proof_only[0]["content"],
+    )
+    example = split_exercises(
+        "1. 求结果。\n证明：由定义可得结果。\n",
+        check_section_end=False,
+        split_solutions=False,
+    )
+    split_solutions_for_section(example, "补充例题", doc_type="textbook")
+    check(
+        "例题节允许单个证明标记作为解答",
+        example[0]["solution_steps"] == "由定义可得结果。",
+    )
+    example_number = split_exercises(
+        "例 1.2 设函数连续。\n解：由定义可得。\n",
+        check_section_end=False,
+        split_solutions=False,
+    )
+    split_solutions_for_section(example_number, "习题", doc_type="textbook")
+    check(
+        "例题编号触发解答策略",
+        example_number[0]["number"] == "例1.2"
+        and example_number[0]["solution_steps"] == "由定义可得。",
+    )
+    mixed = split_exercises(
+        "1. 题一\n解：过程一\n\n2. 题二\n无解答。\n\n3. 题三\n解答：过程三\n",
+        check_section_end=False,
+        split_solutions=False,
+    )
+    split_solutions_for_section(mixed, "习题 1", doc_type="exercise_book")
+    check(
+        "习题集按整节多数证据分离解答",
+        mixed[0]["solution_steps"] == "过程一"
+        and mixed[1]["solution_steps"] == ""
+        and mixed[2]["solution_steps"] == "过程三",
     )
 
 
@@ -404,9 +449,27 @@ def test_api_contract() -> None:
             ],
         }
     ]
+    no_exercise_node = {
+        "title": "空习题节",
+        "has_exercise": True,
+        "exercises": [],
+        "_section_path": "第一章/空习题节",
+    }
+    answer_node = {
+        "title": "习题答案",
+        "is_answers": True,
+        "answer_sections": [],
+        "_section_path": "答案/习题答案",
+    }
     with patch(
         "exercise_extractor.api.iter_sections",
-        return_value=iter([internal_nodes[0]["children"][0]]),
+        return_value=iter(
+            [
+                no_exercise_node,
+                answer_node,
+                internal_nodes[0]["children"][0],
+            ]
+        ),
     ):
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
             f.write(b"%PDF-1.4 fake minimal")
@@ -416,10 +479,11 @@ def test_api_contract() -> None:
         finally:
             os.unlink(public_pdf)
     check(
-        "extract_exercise 返回扁平公共 section",
-        len(sections) == 1
-        and sections[0]["path"] == "第一章/习题一"
-        and "children" not in sections[0],
+        "extract_exercise 过滤空 section 并保留答案 section",
+        len(sections) == 2
+        and sections[0]["is_answers"] is True
+        and sections[1]["path"] == "第一章/习题一"
+        and "children" not in sections[1],
     )
 
 

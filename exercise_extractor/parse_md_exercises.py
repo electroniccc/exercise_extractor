@@ -70,6 +70,15 @@ EXERCISE_MULTI_RE = re.compile(
     + _EXERCISE_JUNK
     + r"(\d{1,3}(?:\s*[.．]\s*\d{1,3})+)\s*[.．]?\*?\s*"
 )
+# 例题编号：教材中常见“例 1.2 …”或“例题1.2 …”，编号本身可能没有
+# 额外分隔符。保留“例”前缀，供按节判断例题语境；后续公共输出重编号时
+# 会把原始编号写入 original_number。
+EXAMPLE_NUM_RE = re.compile(
+    r"^\s*"
+    + _EXERCISE_JUNK
+    + r"(例(?:题)?\s*\d{1,3}(?:\s*[.．]\s*\d{1,3})*)"
+    + r"\s*(?:[、)）]|[.．](?!\s*\d))?\*?\s*"
+)
 # markdown 标题行（# 开头）：作为小节边界，重置题号序列
 HEADING_RE = re.compile(r"^\s*#")
 # 页间标记：由 PDF 分页流程（combine_section_pages）插入，用于页码溯源；
@@ -107,6 +116,7 @@ ANSWER_START_RE = re.compile(
 SOLUTION_START_RE = re.compile(
     r"^\s*(?:"
     r"[\[（(]\s*解\s*[\])）)][：:]?"
+    r"|解答[：:]"
     r"|解[：:.．\s]"
     r")\s*"
 )
@@ -301,7 +311,9 @@ def split_answer_from_content(content: str) -> tuple[str, str | None]:
     return split_at_line_marker(content, ANSWER_START_RE)
 
 
-def _split_solution(content: str) -> tuple[str, str | None]:
+def _split_solution(
+    content: str, *, allow_single_proof: bool = True
+) -> tuple[str, str | None]:
     """把解答过程从题干中切出（支持“解”标记与“证明/证”标记）。
 
     “证明/证”标记的特殊规则（证明题的题干里也常有“证明：…”）：
@@ -319,7 +331,7 @@ def _split_solution(content: str) -> tuple[str, str | None]:
         if head:
             rest = PROOF_START_RE.sub("", "\n".join(lines[i:]), count=1).strip()
             return head, rest
-    if len(proof_idxs) == 1:
+    if len(proof_idxs) == 1 and allow_single_proof:
         first_nonblank = next((i for i, l in enumerate(lines) if l.strip()), None)
         if proof_idxs[0] != first_nonblank:
             i = proof_idxs[0]
@@ -327,6 +339,105 @@ def _split_solution(content: str) -> tuple[str, str | None]:
             rest = PROOF_START_RE.sub("", "\n".join(lines[i:]), count=1).strip()
             return head, rest
     return split_at_line_marker(content, SOLUTION_START_RE, allow_first_line=False)
+
+
+_EXAMPLE_SECTION_RE = re.compile(
+    r"(?:例题|例子|worked\s+examples?|examples?)", re.IGNORECASE
+)
+_EXAMPLE_NUMBER_RE = re.compile(r"^\s*例(?:题)?\s*[^\s]*", re.IGNORECASE)
+
+
+def _is_example_context(
+    section_title: str | None, exercises: list[Exercise]
+) -> bool:
+    """判断一组习题是否属于例题语境。"""
+    if _EXAMPLE_SECTION_RE.search(section_title or ""):
+        return True
+    if any(
+        _EXAMPLE_SECTION_RE.search(str(e.get("section") or ""))
+        for e in exercises
+    ):
+        return True
+    return any(
+        _EXAMPLE_NUMBER_RE.match(str(e.get("number") or ""))
+        for e in exercises
+    )
+
+
+def _solution_evidence(content: str) -> tuple[bool, bool]:
+    """返回 (强解答证据, 弱解答证据)。
+
+    ``解：``/``解答：`` 是强证据；多个独立的“证明/证”标记通常表示
+    题干先给出待证结论、后面又开始正式证明，也作为强证据。单个“证明：”
+    只作为弱证据，因为它很可能只是题目要求的一部分（如“证明：……”。）。
+    """
+    lines = content.split("\n")
+    first_nonblank = next(
+        (i for i, line in enumerate(lines) if line.strip()), None
+    )
+    solution_idxs = [
+        i
+        for i, line in enumerate(lines)
+        if SOLUTION_START_RE.match(line) and i != first_nonblank
+    ]
+    proof_idxs = [
+        i for i, line in enumerate(lines) if PROOF_START_RE.match(line)
+    ]
+    strong = bool(solution_idxs) or len(proof_idxs) >= 2
+    weak = strong or bool(proof_idxs)
+    return strong, weak
+
+
+def split_solutions_for_section(
+    exercises: list[Exercise],
+    section_title: str | None = None,
+    doc_type: str = "textbook",
+    force: bool | None = None,
+) -> bool:
+    """按整节证据决定是否把解答过程从题干中分离。
+
+    例题节（或题号本身为“例…”）直接启用解答分离。普通节只在带有强解答
+    证据的题目多于其它题目时启用；习题集在解答证据与无解答证据平票时也
+    启用。单个“证明：”不会被当作解答，避免把“试证明/证明：结论”这类题干
+    误切。``force`` 供审校后的同一节复用原先的分离策略；未显式提供时按当前
+    exercises 重新投票。
+    """
+    example_context = _is_example_context(section_title, exercises)
+    if force is None:
+        strong_count = sum(
+            _solution_evidence(e.get("content") or "")[0] for e in exercises
+        )
+        # 只有“无解/证明标记且无内联答案”的题目才作为反证；单独的“答：”
+        # 只是最终答案，无法说明该节是否存在完整解答过程，保持中立。
+        no_solution_count = sum(
+            not _solution_evidence(e.get("content") or "")[0]
+            and not e.get("answer")
+            for e in exercises
+        )
+        # 课本采用“有解答证据严格过半”的保守先验；习题集本身更可能
+        # 含有过程，平票时允许启用。其它来源采用课本的严格规则。
+        if doc_type == "exercise_book":
+            enabled = strong_count > 0 and strong_count >= no_solution_count
+        else:
+            enabled = strong_count > no_solution_count
+    else:
+        enabled = force
+    enabled = bool(enabled or example_context)
+
+    for item in exercises:
+        content = item.get("content") or ""
+        if enabled:
+            # 普通节的单个“证明：”仍留在题干中；例题节允许按旧规则处理，
+            # 因为例题的题干/解答通常明确连续出现。
+            content, solution = _split_solution(
+                content, allow_single_proof=example_context
+            )
+            item["content"] = content
+            item["solution_steps"] = solution or ""
+        else:
+            item["content"] = content
+            item["solution_steps"] = ""
+    return enabled
 
 
 def drop_runs_not_reaching_section_end(
@@ -426,6 +537,7 @@ def split_exercises(
     content: str,
     keep_leading: bool = True,
     check_section_end: bool = True,
+    split_solutions: bool = True,
 ) -> list[Exercise]:
     """按题号把 markdown 文本分割成一道道习题。
 
@@ -441,6 +553,9 @@ def split_exercises(
     check_section_end=False 时（显式习题节点 / 习题集），不做“数字题必须匹配到
     小节结尾”的后置校验：该规则用于剔除节尾搜索区间里正文的编号列表，
     但已知是习题的区域里解答常引用“定理 N/定义 N”，会误伤整组题目。
+
+    split_solutions=False 时只分离“答”段，暂不处理“解/证明”段，供课本和
+    习题集先按整节统计解答证据后再统一决定。
 
     注意：有的章节会包含多组独立编号（如整章习题答案里每组答案都从 1 重新开始），
     所以用列表保存而不是 dict——dict 的键会因重复而互相覆盖。
@@ -501,9 +616,21 @@ def split_exercises(
                 prev_key = ()
                 continue
 
-        # 多级题号（"1.1.1"、"1. 1.7"、"1. 1. 10"）优先匹配
-        m_multi = EXERCISE_MULTI_RE.match(line)
-        if m_multi:
+        # 例题编号优先于普通数字编号（“例 1.2 …”）。
+        m_example = EXAMPLE_NUM_RE.match(line)
+        if m_example:
+            label = re.sub(r"\s+", "", m_example.group(1))
+            num_key: tuple[int, ...] | None = tuple(
+                int(n) for n in re.findall(r"\d+", label)
+            )
+            sep = ""
+            stripped = line[m_example.end():]
+        else:
+            # 多级题号（"1.1.1"、"1. 1.7"、"1. 1. 10"）优先匹配
+            m_multi = EXERCISE_MULTI_RE.match(line)
+        if m_example:
+            pass
+        elif m_multi:
             parts = [
                 p.strip() for p in m_multi.group(1).replace("．", ".").split(".")
             ]
@@ -576,7 +703,10 @@ def split_exercises(
         if item.get("number") == "__preamble__":
             continue
         content, answer = split_at_line_marker(item["content"], ANSWER_START_RE)
-        content, solution = _split_solution(content)
+        if split_solutions:
+            content, solution = _split_solution(content)
+        else:
+            solution = None
         item["content"] = content
         item["answer"] = answer or ""
         item["solution_steps"] = solution or ""

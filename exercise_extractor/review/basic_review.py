@@ -513,7 +513,7 @@ def review_basic(
     时直接抛出异常；题数变化和低相似度只写入 ``review_warnings``，不回退。
     """
     from ..public_schema import normalize_public_section, public_section_from_node
-    from ..parse_md_exercises import split_exercises
+    from ..parse_md_exercises import split_exercises, split_solutions_for_section
 
     normalized = normalize_public_section(section)
     document_name = normalized.get("document_name")
@@ -543,13 +543,23 @@ def review_basic(
     )
     reviewed_items = [
         item
-        for item in split_exercises(revised, check_section_end=False)
+        for item in split_exercises(
+            revised, check_section_end=False, split_solutions=False
+        )
         if item.get("number") != "__preamble__"
     ]
     if not reviewed_items:
         raise ValueError("LLM 返回的 Markdown 无法解析出编号习题")
 
     original_items = normalized["exercises"]
+    # 公共 section 不额外暴露内部 doc_type；如果原始版本已有解答段，
+    # 审校后的同一节沿用该策略，否则避免审校解析阶段再次把单个“证明：”
+    # 误判为解答。
+    split_solutions_for_section(
+        reviewed_items,
+        normalized.get("title") or normalized.get("path"),
+        force=any(item.get("solution_steps") for item in original_items),
+    )
     warnings: list[dict[str, Any]] = []
     if len(reviewed_items) != len(original_items):
         warnings.append(

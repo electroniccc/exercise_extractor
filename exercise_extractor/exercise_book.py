@@ -25,6 +25,7 @@ from .parse_md_exercises import (
     Exercise,
     page_marker,
     split_exercises,
+    split_solutions_for_section,
     truncate_before_page_heading,
     truncate_from_page_heading,
 )
@@ -144,11 +145,17 @@ def _extract_no_toc(content: str) -> list[Exercise]:
         if not chunk:
             return
         items = split_exercises(
-            chunk, keep_leading=False, check_section_end=False
+            chunk,
+            keep_leading=False,
+            check_section_end=False,
+            split_solutions=False,
         )
         items = [e for e in items if e.get("number") != "__preamble__"]
         if not items:
             return
+        split_solutions_for_section(
+            items, current_heading, doc_type="exercise_book"
+        )
         for item in items:
             item["section"] = current_heading
             item["question_type"] = "short_answer"
@@ -200,12 +207,18 @@ def extract_exercises(sections: list[SectionNode]) -> None:
                 content, figures = extract_figures(content)
                 # 习题集每节开头可能是学习要点/正文，不拼进第一题
                 exercises = split_exercises(
-                    content, keep_leading=False, check_section_end=False
+                    content,
+                    keep_leading=False,
+                    check_section_end=False,
+                    split_solutions=False,
                 )
                 attach_figures(exercises, figures)
                 convert_exercise_tables(exercises)
                 for item in exercises:
                     item["question_type"] = "short_answer"
+                split_solutions_for_section(
+                    exercises, node.get("title"), doc_type="exercise_book"
+                )
                 _renumber(exercises)
                 node["exercises"] = exercises
             logger.debug(f"[{node['title']}] 提取到 {len(node['exercises'])} 道习题")

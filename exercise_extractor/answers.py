@@ -166,7 +166,11 @@ def _collect_exercise_targets(sections) -> list[dict]:
                 or extract_chapter_number(title)
             )
             if chapter is None:
-                m = re.match(r"(\d{1,2})", exercises[0].get("original_number", ""))
+                # 公共 JSON 中 original_number 可以合法为 null；回退到
+                # 题号推断章号时必须传字符串给正则。
+                m = re.match(
+                    r"(\d{1,2})", exercises[0].get("original_number") or ""
+                )
                 if m:
                     chapter = int(m.group(1))
             targets.append(
