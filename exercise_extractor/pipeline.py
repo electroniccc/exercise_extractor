@@ -187,12 +187,42 @@ def iter_sections(
             if node.get("has_exercise"):
                 ocr_pages(args, [node], markdown_path, pipeline)
                 combine_section_pages([node], markdown_path)
+                # 提取器可能会把无效的隐式节尾节点从传入列表中移除
+                # （例如题号不连续的尾部正文）。流式流程必须检查这个结果，
+                # 否则仍会继续使用原 node 写出并 yield，导致 WebUI 与 CLI
+                # 的整树流程结果不一致。
+                processed_nodes = [node]
                 if args.doc_type == "exercise_book":
-                    exercise_book.extract_exercises([node])
+                    exercise_book.extract_exercises(processed_nodes)
                 elif args.doc_type == "exampaper":
-                    exampaper.extract_exercises([node])
+                    exampaper.extract_exercises(processed_nodes)
                 else:
-                    extract_exercises([node], known_sections=known_sections)
+                    extract_exercises(processed_nodes, known_sections=known_sections)
+                if not processed_nodes:
+                    logger.info(
+                        "流式提取丢弃节点: title=%r path=%r",
+                        node.get("title"),
+                        node_path,
+                    )
+                    # 当前隐式节点通常没有子节点；保留遍历逻辑，避免未来
+                    # 节点被丢弃但仍挂有有效子节点时把子节点一并跳过。
+                    yield from walk(node.get("children", []), node_path)
+                    continue
+                # 与 CLI 的 write_section_markdown 保持同一过滤条件：只把
+                # 至少含一道有效编号习题的节点交给公共 API。某些显式/隐式
+                # 节点可能在切分后仍保留，但只含 preamble 或空题目；这类
+                # 节点不能因为流式路径而出现在 WebUI 中。
+                if not any(
+                    item.get("number") not in (None, "__preamble__")
+                    for item in node.get("exercises", [])
+                ):
+                    logger.info(
+                        "流式提取过滤无编号习题节点: title=%r path=%r",
+                        node.get("title"),
+                        node_path,
+                    )
+                    yield from walk(node.get("children", []), node_path)
+                    continue
                 if oss_cfg:
                     apply_oss_images([node], markdown_path, oss_cfg, oss_cache)
                 if write_outputs_enabled:
