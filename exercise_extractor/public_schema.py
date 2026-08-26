@@ -70,8 +70,14 @@ def public_section_from_node(
 
     # 公共 content 是“题号 + 题目 + 解/答”的纯序列；section/title/path
     # 已单独提供，不再把渲染时生成的 ``## ...`` 小节标题重复放进去。
+    # JSON 中保留规范化后的 number 供匹配使用，但展示 Markdown 使用
+    # 解析器记录的 original_number（例如 5.10），避免题号被重编号覆盖。
+    render_exercises = deepcopy(exercises)
+    for item in render_exercises:
+        if item.get("original_number"):
+            item["number"] = item["original_number"]
     original = render_exercise_markdown(
-        {**node, "exercises": exercises}, include_section_headings=False
+        {**node, "exercises": render_exercises}, include_section_headings=False
     )
     answer_match = node.get("answer_match")
     if not isinstance(answer_match, dict):
@@ -109,6 +115,9 @@ def public_answer_section_from_node(
     answer_sections = node.get("answer_sections")
     if not isinstance(answer_sections, list):
         answer_sections = []
+    from .postprocess import render_answer_markdown
+
+    answer_node = {**node, "is_answers": True, "answer_sections": answer_sections}
     return {
         "document_name": document_name or node.get("document_name") or "",
         "title": node.get("title") or "",
@@ -116,6 +125,11 @@ def public_answer_section_from_node(
         "is_answers": True,
         "exercise_page_range": list(node.get("exercise_page_range") or []),
         "answer_sections": deepcopy(answer_sections),
+        "content": {
+            "original": render_answer_markdown(answer_node),
+            "basic_review": None,
+            "tool_review": None,
+        },
     }
 
 

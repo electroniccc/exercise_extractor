@@ -502,7 +502,7 @@ def test_llm_review_contract() -> None:
         review_markdown_with_tools,
     )
 
-    check("审校默认模型", DEFAULT_REVIEW_MODEL == "qwen3.7-max-2026-05-17")
+    check("审校默认模型", DEFAULT_REVIEW_MODEL == "deepseek-v4-flash-0731")
     check(
         "审校默认地址与目录识别一致",
         DEFAULT_REVIEW_BASE_URL
@@ -526,7 +526,11 @@ def test_llm_review_contract() -> None:
     )
     check("基础审校保留题目结构", "*1.* 题目，内容" in reviewed)
     check("基础审校不追加逐题状态", "审校状态：" not in reviewed)
-
+    check(
+        "基础审校显式关闭思考模式",
+        basic_client.chat.completions.create.call_args.kwargs["extra_body"]
+        == {"enable_thinking": False},
+    )
     section = {
         "document_name": "测试书",
         "title": "习题1",

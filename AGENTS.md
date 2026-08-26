@@ -154,7 +154,7 @@ fixed = review_basic(
 )
 ```
 
-`match_answers` 接受公共 section JSON 列表和完整答案 section JSON，返回新的填充后列表；`review_basic` 接受一个公共 section JSON，返回新的审校后 section JSON。两个接口默认使用阿里云 OpenAI-compatible 地址和 `qwen3.7-max-2026-05-17`，也可以在调用时
+`match_answers` 接受公共 section JSON 列表和完整答案 section JSON，返回新的填充后列表；`review_basic` 接受一个公共 section JSON，返回新的审校后 section JSON。两个接口默认使用阿里云 OpenAI-compatible 地址和 `deepseek-v4-flash-0731`，也可以在调用时
 传 `base_url`、`api_key`、`model` 覆盖。内部仍以整节 Markdown 调用 LLM，但 Markdown 不再是公共接口格式；basic review 按模板校对 OCR 文字、标点与 KaTeX/LaTeX 格式。数学审校模块暂时只保留、不继续开发；CLI 的 `--review` 默认暂时只执行第一轮基础审校，
 加 `--review-with-tools` 才启用第二轮数学审校；`--review-max-rounds` 仅在启用工具审校时生效。也可通过
 `OPENAI_BASE_URL`、`OPENAI_API_KEY`（或 `ALIYUN_API_KEY`）提供默认地址和密钥；

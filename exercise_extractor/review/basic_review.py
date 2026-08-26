@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 # 与 ocr.py 中 toc_forge.bookmark_pdf 使用同一套阿里云 OpenAI-compatible 地址；
 # 调用接口时仍可通过 base_url 覆盖为其他兼容服务。
-DEFAULT_REVIEW_MODEL = "qwen3.7-max-2026-05-17"
+DEFAULT_REVIEW_MODEL = "deepseek-v4-flash-0731"
 DEFAULT_REVIEW_BASE_URL = (
     "https://ws-alorrjihwnhn7hw7.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
 )
@@ -437,6 +437,9 @@ def _chat_text(
         model=model,
         messages=messages,
         temperature=0,
+        # 基础审校只做文字、标点和 KaTeX 格式修复，显式关闭支持该参数的
+        # 模型的思考模式，避免无必要的推理延迟和额外 token。
+        extra_body={"enable_thinking": False},
     )
 
 
