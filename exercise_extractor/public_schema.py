@@ -57,6 +57,8 @@ def public_section_from_node(
     document_name: str | None = None,
 ) -> dict[str, Any] | None:
     """把一个内部习题节点投影成公共 section；无编号习题时返回 ``None``。"""
+    if not node.get("has_exercise"):
+        return None
     exercises = [
         _public_exercise(item)
         for item in node.get("exercises", [])

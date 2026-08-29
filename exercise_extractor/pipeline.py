@@ -195,7 +195,8 @@ def iter_sections(
                 if args.doc_type == "exercise_book":
                     exercise_book.extract_exercises(processed_nodes)
                 elif args.doc_type == "exampaper":
-                    exampaper.extract_exercises(processed_nodes)
+                    if not node.get("_exampaper_extracted"):
+                        exampaper.extract_exercises(processed_nodes)
                 else:
                     extract_exercises(processed_nodes, known_sections=known_sections)
                 if not processed_nodes:
@@ -206,6 +207,11 @@ def iter_sections(
                     )
                     # 当前隐式节点通常没有子节点；保留遍历逻辑，避免未来
                     # 节点被丢弃但仍挂有有效子节点时把子节点一并跳过。
+                    yield from walk(node.get("children", []), node_path)
+                    continue
+                # 试卷提取会把整卷根节点拆成题型子节点；根节点仅作内部兼容，
+                # 不应作为一个重复的公共 section 输出。
+                if args.doc_type == "exampaper" and node.get("_exampaper_extracted") and not node.get("has_exercise"):
                     yield from walk(node.get("children", []), node_path)
                     continue
                 # 与 CLI 的 write_section_markdown 保持同一过滤条件：只把
@@ -243,6 +249,7 @@ def iter_sections(
         for n in nodes:
             n.pop("answer_section", None)
             n.pop("_section_path", None)
+            n.pop("_exampaper_extracted", None)
             cleanup(n.get("children", []))
 
     cleanup(exercise_sections)

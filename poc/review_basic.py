@@ -7,8 +7,8 @@
         --output /tmp/review_1_2.json \
         --diff
 
-输入和输出都是单个 section 的 JSON object；diff 不打印到终端，而写到
-输出文件同目录下的 ``.diff.txt`` 文件。
+输入和输出都是单个 section 的 JSON object；输出 JSON 的同时会在同目录写出
+同名 Markdown；diff 不打印到终端，而写到输出文件同目录下的 ``.diff.txt`` 文件。
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ from exercise_extractor.review import (  # noqa: E402
     DEFAULT_REVIEW_MODEL,
     review_basic,
 )
+from exercise_extractor.postprocess import render_exercise_markdown  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -94,6 +95,14 @@ def main() -> int:
     reviewed_text = json.dumps(reviewed, ensure_ascii=False, indent=2) + "\n"
     args.output.write_text(reviewed_text, encoding="utf-8")
     logging.getLogger(__name__).info("结果已写出：%s", args.output)
+
+    # 同时写出由审校后 exercises 重新渲染的 Markdown，方便直接与输入文件比较。
+    markdown_path = args.output.with_suffix(".md")
+    markdown = render_exercise_markdown(
+        {**reviewed, "has_exercise": True}, include_section_headings=False
+    )
+    markdown_path.write_text(markdown, encoding="utf-8")
+    logging.getLogger(__name__).info("Markdown 结果已写出：%s", markdown_path)
 
     if args.diff:
         diff = difflib.unified_diff(

@@ -59,7 +59,7 @@ def test_textbook_fake_cache() -> None:
             text = f.read()
         check(
             "md 输出含解/答",
-            "解：解答一" in text and "答：答案二" in text,
+            "**解**：解答一" in text and "**答**：答案二" in text,
         )
         with open(os.path.join(outdir, "1_习题_1-1.json"), encoding="utf-8") as f:
             data = json.load(f)
@@ -321,6 +321,8 @@ def test_exampaper_table_tail() -> None:
     node = _exampaper_node(
         "春季卷", load_scenario("exampaper_table_tail.txt")
     )
+
+
     exampaper.extract_exercises([node])
     exs = node["exercises"]
     check("表格答案区识别", len(exs) == 4, f"got {len(exs)}")
@@ -339,6 +341,32 @@ def test_exampaper_table_tail() -> None:
     )
 
 
+def test_exampaper_duplicate_number_solution() -> None:
+    """OCR 题号转义且解析再次带题号时，不拆成两道题。"""
+    from exercise_extractor import exampaper
+
+    node = _exampaper_node(
+        "重复题号解析", load_scenario("exampaper_duplicate_number_solution.txt")
+    )
+    exampaper.extract_exercises([node])
+    exs = node["exercises"]
+    check("重复题号解析不产生空题", len(exs) == 3, str(exs))
+    check(
+        "带题号的【答案】合并回选择题",
+        exs[0]["content"] == "设 $x=1$，则 $x+1=$\n\nA. 1\n\nB. 2"
+        and exs[0]["answer"] == "B"
+        and exs[0]["solution_steps"] == "由 $x=1$ 可得 $x+1=2$。",
+    )
+    check(
+        "转义题号保留题干并分离解答",
+        exs[1]["content"] == "（本题满分10分）\n\n计算 $x$。"
+        and exs[1]["solution_steps"] == "设 $x=1$，故结果为 1。",
+    )
+    check(
+        "普通重复题号同样合并",
+        exs[2]["content"] == "求 $y$。"
+        and exs[2]["solution_steps"] == "由题意得 $y=2$。",
+    )
 def test_figure_group() -> None:
     """配图按图注归组（含 (a)(b) 子标签）。"""
     from exercise_extractor.extraction import extract_figures
@@ -361,6 +389,7 @@ SCENARIO_TESTS = {
     "exampaper_multi_choice_proof.txt": test_exampaper_multi_choice_proof,
     "exampaper_single_multi_choice.txt": test_exampaper_single_multi_choice,
     "exampaper_table_tail.txt": test_exampaper_table_tail,
+    "exampaper_duplicate_number_solution.txt": test_exampaper_duplicate_number_solution,
     "html_figure_group.txt": test_figure_group,
 }
 

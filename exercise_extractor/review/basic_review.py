@@ -24,7 +24,7 @@ _EXERCISE_START_RE = re.compile(
     r"\s*[.．、)）]\s*\*?\s+"
 )
 _HEADING_RE = re.compile(r"(?m)^\s*#{1,6}\s+\S.*$")
-_ANSWER_MARKER_RE = re.compile(r"(?m)^\s*(解|答)\s*[：:]\s*")
+_ANSWER_MARKER_RE = re.compile(r"(?m)^\s*(?:\*\*\s*)?(解|答)(?:\s*\*\*)?\s*[：:]\s*")
 _MATH_SPAN_RE = re.compile(
     r"(?s)(?<!\\)\$\$(.*?)(?<!\\)\$\$|(?<!\\)\$(.*?)(?<!\\)\$"
 )
@@ -41,7 +41,7 @@ MIN_REVIEW_TEXT_SIMILARITY = 0.35
 
 BASIC_REVIEW_PROMPT_TEMPLATE = r"""下面是对一个扫描版PDF文档做OCR后提取的部分结果：
 
-- 文档：《{document_name}》
+- 文档：{document_name}
 - 小节：{section_name}
 - 提取内容：该小节的习题与对应答案
 - 内容格式：嵌有LaTeX的Markdown
@@ -60,10 +60,22 @@ BASIC_REVIEW_PROMPT_TEMPLATE = r"""下面是对一个扫描版PDF文档做OCR后
 - 英文内容按英文大学教材惯例处理标点（如句末句号后单空格、em-dash用法等）。
 - 全篇标点风格必须统一，不要一部分用全角一部分用半角。
 
-### 3. LaTeX定界符修复
-检查每个数学表达式是否被完整的一对 `$...$`（行内）或 `$$...$$`（独立成行）包裹：
-- 修复定界符缺失、单侧缺失、多余、不配对的情况。
-- 不要合并或拆分本应独立的表达式，只修复包裹问题本身。
+### 3. LaTeX定界符修复与统一
+
+最终输出中，所有数学表达式必须且只能使用以下两种Markdown数学定界符：
+
+行内公式：统一使用 $...$。
+独立成行的公式：统一使用 $$...$$。
+
+除上述两种形式外，不允许使用任何其他数学定界符。具体要求：
+
+若原文或OCR结果中出现 \(...\)，必须转换为 $...$。
+若原文或OCR结果中出现 \[...\]，必须转换为 $$...$$。
+修复 $ 或 $$ 定界符缺失、单侧缺失、多余、重复嵌套或不配对的情况。
+禁止输出 $\( ... \)$、$$\[ ... \]$$ 等重复嵌套的数学定界符。
+$...$ 内部不得再出现 \(、\)；$$...$$ 内部不得再出现 \[、\]。
+不要因为统一定界符而改变公式内容，也不要合并或拆分本应独立的数学表达式。
+此规则针对最终输出格式，即使输入中的 \(...\)、\[...\] 本身是合法LaTeX，也必须转换为上述统一格式。
 
 ### 4. LaTeX语法修复
 检查LaTeX内容是否有语法错误（如括号不匹配、命令拼写错误、上下标缺失等），在**不改变原有数学含义**的前提下修复。若无法判断某处是OCR错误还是原文本身如此，保守处理，不做改动，并可用行内注释 `<!-- 待确认 -->` 标出（不要擅自修正数学结果）。
@@ -72,7 +84,7 @@ BASIC_REVIEW_PROMPT_TEMPLATE = r"""下面是对一个扫描版PDF文档做OCR后
 按以下规则调整，使LaTeX尽可能兼容KaTeX渲染：
 - `\iint`、`\oiint`、`\oint` 等多重/曲线积分符号如KaTeX原生支持则保留，若涉及需额外宏包的命令，改写为等价的基础命令组合。
 - 不要裸用 `align`、`align*` 环境；如需多行公式对齐，使用 `aligned`（写在 `$$...$$` 内部）。
-- 避免使用 `\dfrac`，统一用 `\frac{{}}{{}}`；仅当表达式明确要求"独立成行的大字号分数"时使用 `\dfrac`。
+- 避免使用 `\dfrac`，统一用 `\frac{}{}`；仅当表达式明确要求"独立成行的大字号分数"时使用 `\dfrac`。
 - 乘号统一使用 `\cdot`（标量乘法）或 `\times`（叉乘/数量级，如 `10^6`），不要混用表达同一含义的乘号。
 - 避免使用非核心宏包命令（如mathtools、physics包的命令），改用KaTeX原生支持的等价写法。
 
@@ -92,7 +104,7 @@ BASIC_REVIEW_PROMPT_TEMPLATE = r"""下面是对一个扫描版PDF文档做OCR后
 
 ### 9. 格式规范化（用于保证多次运行结果一致，便于后续去重hash比对）
 - 分数、根号、上下标的书写方式在同类表达式中保持完全一致的LaTeX写法（例如同一小节内所有分数都用 `\frac`，不要一部分用 `\frac`一部分用手写斜杠形式）。
-- 数字与单位之间是否加空格、极限符号 `\lim_{{n \to \infty}}` 的书写方式（箭头统一用 `\to` 不用 `\rightarrow`）等，在全篇范围内保持唯一固定写法。
+- 数字与单位之间是否加空格、极限符号 `\lim_{n \to \infty}` 的书写方式（箭头统一用 `\to` 不用 `\rightarrow`）等，在全篇范围内保持唯一固定写法。
 - 输出中不要引入原文没有的多余空行或额外的Markdown装饰（如加粗、分割线），除非原文本身包含这些结构。
 
 ## 保守修改总原则
@@ -471,10 +483,12 @@ def review_markdown_basic(
         len(content),
     )
     llm = _make_client(client, base_url, api_key)
-    rendered_prompt = BASIC_REVIEW_PROMPT_TEMPLATE.format(
-        document_name=document_name,
-        section_name=section_name,
-        content=content,
+    # 模板正文含大量 LaTeX 花括号，使用显式占位符替换，避免 ``str.format``
+    # 把 ``\frac{}{}``、``\lim_{...}`` 等公式误当成格式字段。
+    rendered_prompt = (
+        BASIC_REVIEW_PROMPT_TEMPLATE.replace("{document_name}", document_name)
+        .replace("{section_name}", section_name)
+        .replace("{content}", content)
     )
     messages = [
         {
@@ -487,6 +501,10 @@ def review_markdown_basic(
     revised = (raw_response or "").strip()
     if revised.startswith("```") and revised.endswith("```"):
         revised = re.sub(r"^```(?:markdown|md)?\s*|\s*```$", "", revised).strip()
+    # 模板使用 <markdown> 作为输入边界标记；模型偶尔会原样回显，
+    # 这些标签不是实际内容，不能让它们进入最终 Markdown。
+    revised = re.sub(r"^\s*<markdown>\s*", "", revised, flags=re.IGNORECASE)
+    revised = re.sub(r"\s*</markdown>\s*$", "", revised, flags=re.IGNORECASE)
     if not revised:
         raise ValueError("LLM 返回中缺少有效 Markdown")
 

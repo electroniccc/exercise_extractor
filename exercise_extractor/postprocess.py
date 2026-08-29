@@ -111,7 +111,8 @@ def render_exercise_markdown(
 
     公共 section JSON 的 content 是纯题目序列，不需要重复携带小节标题，
     因此公共 schema 调用时会关闭 ``include_section_headings``；CLI 文件输出
-    默认保留原有标题行为。
+    默认保留原有标题行为；解答和答案标签统一使用加粗的 ``**解**`` / ``**答**``，
+    便于人工检查分离结果。
     """
     if not node.get("has_exercise") or not node.get("exercises"):
         return ""
@@ -134,9 +135,9 @@ def render_exercise_markdown(
         sep = item.get("separator", ".")
         chunks.append(f"*{item['number']}{sep}* {item['content']}\n\n")
         if item.get("solution_steps"):
-            chunks.append(f"解：{item['solution_steps']}\n\n")
+            chunks.append(f"**解**：{item['solution_steps']}\n\n")
         if item.get("answer"):
-            chunks.append(f"答：{item['answer']}\n\n")
+            chunks.append(f"**答**：{item['answer']}\n\n")
     return "".join(chunks)
 
 

@@ -111,6 +111,75 @@ def test_unit_boundaries() -> None:
         and mixed[1]["solution_steps"] == ""
         and mixed[2]["solution_steps"] == "过程三",
     )
+    book_proofs = split_exercises(
+        "1. 证明：结论一。\n\n证明. 过程一。\n\n"
+        "2. 证明：结论二。\n\n证法一．过程二。\n",
+        check_section_end=False,
+        split_solutions=False,
+    )
+    split_solutions_for_section(book_proofs, "习题 4.3", doc_type="exercise_book")
+    check(
+        "习题集题尾证明与证法分离",
+        book_proofs[0]["content"] == "证明：结论一。"
+        and book_proofs[0]["solution_steps"] == "过程一。"
+        and book_proofs[1]["content"] == "证明：结论二。"
+        and book_proofs[1]["solution_steps"] == "过程二。",
+    )
+    check(
+        "习题集题尾证明标记为证明题",
+        all(e.get("question_type") == "proof" for e in book_proofs),
+    )
+    from exercise_extractor.exampaper import _split_section_exercises
+
+    paper_proofs = _split_section_exercises(
+        {
+            "lines": [
+                "1. 证明：结论一。",
+                "证明. 过程一。",
+                "2. 设 x。",
+                "解：普通过程。",
+            ],
+            "question_type": "short_answer",
+            "section_key": "三",
+            "title": "三、解答题",
+            "start_page": 1,
+        }
+    )
+    check(
+        "试卷题尾证明按题目单独标记",
+        paper_proofs[0]["question_type"] == "proof"
+        and paper_proofs[1]["question_type"] == "short_answer",
+    )
+    from exercise_extractor.parse_md_exercises import solution_starts_with_proof
+
+    # 解析标记由试卷专用后处理拆分；这里验证原始“解析：证明”能被识别为
+    # 证明型解答起点（完整流程会在 split_inline_answers 后写入 question_type）。
+    check(
+        "试卷解析以证明开头标记为证明题",
+        solution_starts_with_proof("1. 题目。\n解析：证明这是证明过程。"),
+    )
+    escaped_number = _split_section_exercises(
+        {
+            "lines": [
+                r"17\.（本题满分10分）",
+                "",
+                "计算 $x$。",
+                "",
+                "17. 解：",
+                "过程。",
+            ],
+            "question_type": "short_answer",
+            "section_key": "三",
+            "title": "三、解答题",
+            "start_page": 1,
+        }
+    )
+    check(
+        "试卷转义题号保留题干并合并重复解答题号",
+        len(escaped_number) == 1
+        and escaped_number[0]["content"] == "（本题满分10分）\n\n计算 $x$。"
+        and escaped_number[0]["solution_steps"] == "过程。",
+    )
 
 
 def test_toc_and_boundaries() -> None:
@@ -341,6 +410,32 @@ def test_exampaper_build_node() -> None:
         len(sections_ep) == 1
         and sections_ep[0]["exampaper"]
         and sections_ep[0]["exercise_page_range"] == [1, 5],
+    )
+
+
+def test_exampaper_output_sections() -> None:
+    from exercise_extractor import exampaper
+
+    node = {
+        "title": "2025 真题",
+        "has_exercise": True,
+        "exampaper": True,
+        "children": [],
+        "exercise_page_range": [1, 5],
+        "exercise_content": (
+            "一、选择题\n1. 题一\n\n"
+            "二、填空题\n11. 题二\n\n"
+            "三、解答题\n17. 题三\n"
+        ),
+    }
+    exampaper.extract_exercises([node])
+    check(
+        "试卷按题型生成独立 section",
+        not node["has_exercise"]
+        and [child["title"] for child in node["children"]]
+        == ["一、选择题", "二、填空题", "三、解答题"]
+        and [len(child["exercises"]) for child in node["children"]]
+        == [1, 1, 1],
     )
 
 
@@ -760,7 +855,7 @@ def test_cli_review_skips_answer_nodes() -> None:
     check("CLI 默认只执行基础审校并跳过答案节点", calls == ["basic"])
     check(
         "审校内容包含答案",
-        sections[0]["content"]["original"].endswith("答：$1$\n\n"),
+        sections[0]["content"]["original"].endswith("**答**：$1$\n\n"),
     )
     check(
         "工具审校关闭时最终版本使用基础审校",

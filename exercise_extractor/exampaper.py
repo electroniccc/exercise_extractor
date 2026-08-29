@@ -32,6 +32,7 @@ from .parse_md_exercises import (
     demote_exercise_headings,
     split_at_line_marker,
     _split_solution,
+    solution_starts_with_proof,
 )
 
 logger = logging.getLogger(__name__)
@@ -99,11 +100,19 @@ _MARKER_SPLIT_RE = re.compile(
 _PAREN_NUM_RE = re.compile(r"^\s*[（(]\s*(\d{1,3})\s*[）)]\s*", re.MULTILINE)
 # 选择题/填空题的题号行：1. / 1、/ 1.C / （1）题目（先经 _PAREN_NUM_RE 转成 1.）
 _ITEM_NUM_RE = re.compile(
-    r"^\s*[（(]?\s*(\d{1,3})\s*[）)]?\s*[.．、]\s*(.*)$"
+    r"^\s*[（(]?\s*(\d{1,3})\s*[）)]?\s*(?:\\[.．]|[.．、])\s*(.*)$"
 )
 # 简答题的题号行：17. 内容 / 17、内容（要求点号后有空白，避免把
 # “17.2024年…” 里的年份当成多级题号；也避免把行首小数 1.6 当题号）
-_SHORT_ANSWER_NUM_RE = re.compile(r"^\s*(\d{1,3})\s*[.．、](?!\d)\s*(.*)$")
+_SHORT_ANSWER_NUM_RE = re.compile(
+    r"^\s*(\d{1,3})\s*(?:\\[.．]|[.．、])(?!\d)\s*(.*)$"
+)
+_DUPLICATE_SOLUTION_RE = re.compile(
+    r"^\s*(?:"
+    r"【\s*(?:答案|答|解析|详解|解法|分析|点睛|解)\s*】"
+    r"|(?:解答|解析|详解|分析|点睛|证明|证|解|答)\s*[：:.．]?"
+    r")"
+)
 # OCR 可能把整份试卷的题号行都渲染成标题（“### 18. （本小题满分…）”），
 # 通用“标题还原”规则看到下一个标题就停止扫描，连续标题时还原不了。
 # 试卷题型小节是已知的题目区域，直接把“# + 数字 + 分隔符”降级为普通题号行。
@@ -275,8 +284,10 @@ def split_type_sections(
     def flush() -> None:
         nonlocal current
         if current is not None:
-            current["lines"] = [l for l in current["lines"] if l.strip()]
-            if current["lines"]:
+            # 保留 OCR 原文中的空行。选择题选项通常依靠题目与 A/B/C/D
+            # 之间的空行分隔；过早删除会使 Markdown 预览把所有选项揉成一段。
+            # 外层切分器会自行 trim 首尾空白，不会把这些空行带到结果边界。
+            if any(l.strip() for l in current["lines"]):
                 sections.append(current)
         current = None
 
@@ -411,7 +422,19 @@ def _split_simple_numbered_exercises(
             continue
         m = _ITEM_NUM_RE.match(line)
         if m:
+            if (
+                current is not None
+                and current["number"] == m.group(1)
+                and _DUPLICATE_SOLUTION_RE.match(m.group(2))
+            ):
+                # OCR 有时把题号再次写在“解：”前（如 ``17\.题干``、
+                # 下一行 ``17. 解：``）。这是同一道题的解析，不应拆成
+                # 两道同号习题。
+                current["content"] += "\n" + m.group(2)
+                end_page = current_page
+                continue
             if current is not None:
+                current["content"] = current["content"].strip()
                 if start_page is not None and end_page is not None:
                     current["pages"] = [start_page, end_page]
                 items.append(current)
@@ -424,9 +447,12 @@ def _split_simple_numbered_exercises(
             end_page = current_page
             continue
         if current is not None:
-            current["content"] = (current["content"] + "\n" + line).strip()
+            # 不要在每行追加时调用 strip：OCR 用空行分隔选择题选项，
+            # 逐行 strip 会把这些 Markdown 段落边界提前吃掉。
+            current["content"] += "\n" + line
             end_page = current_page
     if current is not None:
+        current["content"] = current["content"].strip()
         if start_page is not None and end_page is not None:
             current["pages"] = [start_page, end_page]
         items.append(current)
@@ -454,7 +480,16 @@ def _split_short_answer_exercises(
             continue
         m = _SHORT_ANSWER_NUM_RE.match(line)
         if m:
+            if (
+                current is not None
+                and current["number"] == m.group(1)
+                and _DUPLICATE_SOLUTION_RE.match(m.group(2))
+            ):
+                current["content"] += "\n" + m.group(2)
+                end_page = current_page
+                continue
             if current is not None:
+                current["content"] = current["content"].strip()
                 if start_page is not None and end_page is not None:
                     current["pages"] = [start_page, end_page]
                 items.append(current)
@@ -467,9 +502,10 @@ def _split_short_answer_exercises(
             end_page = current_page
             continue
         if current is not None:
-            current["content"] = (current["content"] + "\n" + line).strip()
+            current["content"] += "\n" + line
             end_page = current_page
     if current is not None:
+        current["content"] = current["content"].strip()
         if start_page is not None and end_page is not None:
             current["pages"] = [start_page, end_page]
         items.append(current)
@@ -520,7 +556,10 @@ def _split_section_exercises(section: TypeSection) -> list[Exercise]:
             item["pages"] = pages
         exercises = [item]
     # 题行内的“答：/解：/证明：”拆到 answer/solution_steps（与通用切分器一致）
+    proof_solution_flags: list[bool] = []
     for item in exercises:
+        proof_solution = solution_starts_with_proof(item.get("content", ""))
+        proof_solution_flags.append(proof_solution)
         content, answer = split_at_line_marker(
             item.get("content", ""), ANSWER_START_RE
         )
@@ -530,8 +569,14 @@ def _split_section_exercises(section: TypeSection) -> list[Exercise]:
         item["solution_steps"] = solution or ""
     attach_figures(exercises, figures)
     convert_exercise_tables(exercises)
-    for item in exercises:
+    for item, proof_solution in zip(exercises, proof_solution_flags):
         item["question_type"] = section["question_type"]
+        if (
+            section["question_type"] == "short_answer"
+            and proof_solution
+            and item.get("solution_steps")
+        ):
+            item["question_type"] = "proof"
         item["section"] = section["title"]
         item["section_key"] = section["section_key"]
         item.setdefault("answer", "")
@@ -644,7 +689,7 @@ def _match_tail_answers(
 
 
 def extract_exercises(sections: list[SectionNode]) -> None:
-    """试卷版提取入口：整卷切分题型小节，处理内嵌/文末答案，写回 node["exercises"]。"""
+    """试卷版提取入口：整卷切分题型小节并生成独立 section 子节点。"""
     for node in sections:
         if not node.get("exampaper"):
             continue
@@ -655,6 +700,14 @@ def extract_exercises(sections: list[SectionNode]) -> None:
             exercises.extend(_split_section_exercises(section))
         # 内嵌解析：【答案】/【解】拆到 answer / solution_steps
         split_inline_answers(exercises)
+        # 解析标记后若正文以“证明/证”开头，简答题改标为证明题；选择题、
+        # 填空题等保留原题型，避免把解析文字误当题型。
+        for item in exercises:
+            if (
+                item.get("question_type") == "short_answer"
+                and re.match(r"^\s*(?:证明|证)(?!明)", item.get("solution_steps", ""))
+            ):
+                item["question_type"] = "proof"
         # 文末答案区：按小节+题号回填
         if tail_content:
             tail_sections = _split_answer_tail(tail_content)
@@ -671,6 +724,37 @@ def extract_exercises(sections: list[SectionNode]) -> None:
                 ]
             _match_tail_answers(exercises, tail_sections)
         node["exercises"] = exercises
+        # 试卷对外也按题型提供独立 section。根节点仍保留整卷 exercises 供
+        # 内部兼容/调试，但隐藏根节点的输出，由子节点负责写出各题型结果。
+        grouped: dict[str, list[Exercise]] = {}
+        for item in exercises:
+            key = str(item.get("section_key") or item.get("section") or "简答题")
+            grouped.setdefault(key, []).append(item)
+        children: list[SectionNode] = []
+        root_range = list(node.get("exercise_page_range") or [])
+        for key, items in grouped.items():
+            pages = [
+                page
+                for item in items
+                for page in (item.get("pages") or [])
+                if isinstance(page, int)
+            ]
+            page_range = [min(pages), max(pages) + 1] if pages else root_range.copy()
+            children.append(
+                {
+                    "title": key,
+                    "has_exercise": True,
+                    "exampaper": True,
+                    "children": [],
+                    "exercise_page_range": page_range,
+                    "tail_search_used": False,
+                    "exercises": items,
+                    "_exampaper_extracted": True,
+                }
+            )
+        node["children"] = children
+        node["has_exercise"] = False
+        node["_exampaper_extracted"] = True
         logger.debug(
             "[%s] 提取到 %d 道题（%s）",
             node.get("title"),

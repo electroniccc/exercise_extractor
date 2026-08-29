@@ -106,6 +106,8 @@ EXERCISE_HEADING_RE = re.compile(
 # 结束都是答案。裸“答”分支用负向断言排除“答案/答题/答 案”等非答案段字样。
 ANSWER_START_RE = re.compile(
     r"^\s*(?:"
+    r"\*\*\s*答\s*\*\*[：:]?"
+    r"|"
     r"[\[（(]\s*答\s*[\])）)][：:]?"
     r"|答(?!\s*[\u4e00-\u9fff])[：:]?"
     r")\s*"
@@ -115,14 +117,21 @@ ANSWER_START_RE = re.compile(
 # 带括号的写法本身无歧义。
 SOLUTION_START_RE = re.compile(
     r"^\s*(?:"
+    r"\*\*\s*解\s*\*\*[：:]?"
+    r"|"
     r"[\[（(]\s*解\s*[\])）)][：:]?"
     r"|解答[：:]"
     r"|解[：:.．\s]"
     r")\s*"
 )
-# “证明/证”开头的解答段：“证明. / 证明： / 证. / 证： / 解空格”等
+# “证明/证”开头的解答段：“证明. / 证明： / 证. / 证：”以及“证法一”等。
+# 证法标题常用于习题集的多种解法，必须和普通证明标记一样参与分离。
 PROOF_START_RE = re.compile(
-    r"^\s*(?:证明(?!题)(?:[.．：:]|\s)|证(?!明)(?:[.．：:]|\s))\s*"
+    r"^\s*(?:"
+    r"证法\s*[一二三四五六七八九十\d]+\s*[.．：:]?"
+    r"|证明(?!题)(?:[.．：:]|\s|(?=[\u4e00-\u9fff]))"
+    r"|证(?!明)(?:[.．：:]|\s|(?=[\u4e00-\u9fff]))"
+    r")\s*"
 )
 
 
@@ -367,9 +376,9 @@ def _is_example_context(
 def _solution_evidence(content: str) -> tuple[bool, bool]:
     """返回 (强解答证据, 弱解答证据)。
 
-    ``解：``/``解答：`` 是强证据；多个独立的“证明/证”标记通常表示
-    题干先给出待证结论、后面又开始正式证明，也作为强证据。单个“证明：”
-    只作为弱证据，因为它很可能只是题目要求的一部分（如“证明：……”。）。
+    ``解：``/``解答：`` 是强证据；题干之后出现的“证明/证”或“证法一”等
+    标记也是强证据。题干第一行的单个“证明：”只作为弱证据，因为它很可能
+    只是题目要求的一部分（如“证明：……”。）。
     """
     lines = content.split("\n")
     first_nonblank = next(
@@ -383,9 +392,40 @@ def _solution_evidence(content: str) -> tuple[bool, bool]:
     proof_idxs = [
         i for i, line in enumerate(lines) if PROOF_START_RE.match(line)
     ]
-    strong = bool(solution_idxs) or len(proof_idxs) >= 2
+    # 题干后的单个证明/证法标记在习题集里通常就是解答起点；只有位于
+    # 第一行的单个“证明：”才保持弱证据，避免误切题目要求。
+    trailing_proof = any(i != first_nonblank for i in proof_idxs)
+    strong = bool(solution_idxs) or trailing_proof or len(proof_idxs) >= 2
     weak = strong or bool(proof_idxs)
     return strong, weak
+
+
+def solution_starts_with_proof(content: str) -> bool:
+    """判断题干后是否紧跟以“证明/证/证法”开头的解答过程。
+
+    题目第一行的“证明：……”是题干要求，不算解答；只有后续独立出现的
+    证明标记才触发。该信息在 ``_split_solution`` 移除标记前读取，供习题集
+    和试卷把此类题目标记为 ``proof``。
+    """
+    lines = content.split("\n")
+    first_nonblank = next((i for i, line in enumerate(lines) if line.strip()), None)
+    proof_idxs = [i for i, line in enumerate(lines) if PROOF_START_RE.match(line)]
+    if any(i != first_nonblank for i in proof_idxs):
+        return True
+    # 试卷/解析文档也常写成“解答：证明……”或“解析：证明……”。
+    # 只检查题干后的标记，避免把题目首行的“解答：证明……”误判。
+    for i, line in enumerate(lines):
+        if i == first_nonblank:
+            continue
+        marker = re.match(
+            r"^\s*(?:解答|解析|详解|分析|点睛)\s*[：:]\s*(.*)$", line
+        )
+        if marker and PROOF_START_RE.match(marker.group(1)):
+            return True
+        solution_marker = SOLUTION_START_RE.match(line)
+        if solution_marker and PROOF_START_RE.match(line[solution_marker.end() :]):
+            return True
+    return False
 
 
 def split_solutions_for_section(
@@ -398,8 +438,9 @@ def split_solutions_for_section(
 
     例题节（或题号本身为“例…”）直接启用解答分离。普通节只在带有强解答
     证据的题目多于其它题目时启用；习题集在解答证据与无解答证据平票时也
-    启用。单个“证明：”不会被当作解答，避免把“试证明/证明：结论”这类题干
-    误切。``force`` 供审校后的同一节复用原先的分离策略；未显式提供时按当前
+    启用。题目第一行的单个“证明：”不会被当作解答，但题干之后的“证明.”、
+    “证法一”等标记视为强证据，避免漏掉习题集常见的题尾证明过程。
+    ``force`` 供审校后的同一节复用原先的分离策略；未显式提供时按当前
     exercises 重新投票。
     """
     example_context = _is_example_context(section_title, exercises)
@@ -426,14 +467,18 @@ def split_solutions_for_section(
 
     for item in exercises:
         content = item.get("content") or ""
+        proof_solution = solution_starts_with_proof(content)
         if enabled:
-            # 普通节的单个“证明：”仍留在题干中；例题节允许按旧规则处理，
-            # 因为例题的题干/解答通常明确连续出现。
+            # 题目第一行的“证明：”仍留在题干中；习题集允许切分题干后的
+            # 单个证明/证法标记，因为这正是其常见的解答排版。
             content, solution = _split_solution(
-                content, allow_single_proof=example_context
+                content,
+                allow_single_proof=(example_context or doc_type == "exercise_book"),
             )
             item["content"] = content
             item["solution_steps"] = solution or ""
+            if doc_type == "exercise_book" and proof_solution and solution:
+                item["question_type"] = "proof"
         else:
             item["content"] = content
             item["solution_steps"] = ""
