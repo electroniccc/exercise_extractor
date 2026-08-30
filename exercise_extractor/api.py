@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from typing import Optional
 
 from .pipeline import iter_sections
+from .parse_md_exercises import split_exercises
 from .public_schema import (
     public_answer_section_from_node,
     public_section_from_node,
@@ -24,6 +25,47 @@ DEFAULT_VL_REC_API_MODEL_NAME = "PaddleOCR-VL-1.6-0.9B"
 
 # 当前支持的输入类型；后续扩展 image / markdown
 SUPPORTED_SOURCE_TYPES = ("pdf",)
+
+
+def reparse_exercises(section: dict, markdown: str | None = None) -> dict:
+    """按 Markdown 重新拆分题目并返回完整固定 section JSON。
+
+    该接口供调用方在人工编辑或 LLM 审校修复题号后重新建立 exercises。
+    ``markdown`` 为空时使用 ``section.content.original``；题号支持普通、
+    斜体和粗体 Markdown 标记（如 ``*1.*``、``**1.**``）。
+    """
+    if not isinstance(section, dict):
+        raise TypeError("section 必须是 JSON object")
+    result = dict(section)
+    content = result.get("content")
+    if not isinstance(content, dict):
+        content = {}
+    text = markdown if markdown is not None else content.get("original")
+    if not isinstance(text, str):
+        raise TypeError("section.content.original 必须是字符串")
+    parsed = [
+        item for item in split_exercises(text, check_section_end=False)
+        if item.get("number") != "__preamble__"
+    ]
+    exercises = []
+    for item in parsed:
+        exercises.append({
+            "number": str(item.get("number") or ""),
+            "original_number": item.get("original_number"),
+            "separator": item.get("separator") or ".",
+            "content": item.get("content") or "",
+            "solution_steps": item.get("solution_steps") or "",
+            "answer": item.get("answer") or "",
+            "question_type": item.get("question_type") or "short_answer",
+            "section": item.get("section"),
+            "section_key": item.get("section_key"),
+            "pages": list(item.get("pages") or []),
+            "bbox": list(item.get("bbox") or []),
+        })
+    result["exercises"] = exercises
+    result["exercise_count"] = len(exercises)
+    result["content"] = {**content, "original": text}
+    return result
 
 
 def _resolve_model_dir(model_dir: Optional[str]) -> Optional[str]:
