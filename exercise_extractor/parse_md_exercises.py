@@ -29,6 +29,7 @@ class Exercise(TypedDict, total=False):
     separator: str
     section: str
     pages: list[int]
+    bbox: list[dict[str, object]]
     question_type: str
     answer: str
     solution_steps: str

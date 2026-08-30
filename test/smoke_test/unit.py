@@ -607,6 +607,88 @@ def test_api_contract() -> None:
     )
 
 
+def test_exercise_bbox() -> None:
+    """PaddleOCR parsing block 能映射为带页码的题目级 bbox。"""
+    from exercise_extractor.exercise_bbox import attach_exercise_bboxes
+    from exercise_extractor.ocr import _save_ocr_result
+    from exercise_extractor.public_schema import public_section_from_node
+
+    with tempfile.TemporaryDirectory() as cache_dir:
+        raw_result = Mock()
+
+        def save_markdown(*, save_path: str, **_kwargs) -> None:
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            with open(save_path, "w", encoding="utf-8") as file:
+                file.write("1. 题目")
+
+        def save_json(*, save_path: str, **_kwargs) -> None:
+            with open(save_path, "w", encoding="utf-8") as file:
+                json.dump({"parsing_res_list": []}, file)
+
+        raw_result.save_to_markdown.side_effect = save_markdown
+        raw_result.save_to_json.side_effect = save_json
+        _save_ocr_result(raw_result, 2, cache_dir, "PaddleOCR-VL")
+        check(
+            "单页 OCR 同时缓存 Markdown 和原始 JSON",
+            os.path.isfile(os.path.join(cache_dir, "page_2", "page.md"))
+            and os.path.isfile(os.path.join(cache_dir, "page_2", "page.json")),
+        )
+
+        page_dir = os.path.join(cache_dir, "page_3")
+        os.makedirs(page_dir)
+        with open(os.path.join(page_dir, "page.json"), "w", encoding="utf-8") as file:
+            json.dump(
+                {
+                    "parsing_res_list": [
+                        {
+                            "block_content": "1. 求函数 $f(x)=x^2$ 的导数。",
+                            "block_bbox": [10, 20, 300, 90],
+                        },
+                        {
+                            "block_content": "第二节 无关正文",
+                            "block_bbox": [10, 100, 300, 140],
+                        },
+                    ]
+                },
+                file,
+                ensure_ascii=False,
+            )
+        node = {
+            "title": "习题一",
+            "has_exercise": True,
+            "exercise_page_range": [3, 4],
+            "exercises": [
+                {
+                    "number": "1",
+                    "content": "求函数 $f(x)=x^2$ 的导数。",
+                    "answer": "",
+                    "solution_steps": "",
+                    "pages": [3, 3],
+                }
+            ],
+        }
+        attach_exercise_bboxes([node], cache_dir)
+        expected = [{"page": 3, "bbox": [10.0, 20.0, 300.0, 90.0]}]
+        check("习题文本映射 OCR bbox", node["exercises"][0]["bbox"] == expected)
+        public = public_section_from_node(node, document_name="测试书")
+        check(
+            "公共 Exercise JSON 保留固定 bbox 字段",
+            public is not None and public["exercises"][0]["bbox"] == expected,
+        )
+
+        unmatched = {
+            "title": "旧缓存",
+            "has_exercise": True,
+            "exercise_page_range": [4, 5],
+            "exercises": [{"number": "1", "content": "题目", "pages": [4, 4]}],
+        }
+        attach_exercise_bboxes([unmatched], cache_dir)
+        check(
+            "旧缓存缺少 page.json 时 bbox 为空",
+            unmatched["exercises"][0]["bbox"] == [],
+        )
+
+
 def test_llm_review_contract() -> None:
     """LLM 审校接口只改文本并按题目追加状态，工具轮次可控。"""
     from exercise_extractor.review import (

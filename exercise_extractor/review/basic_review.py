@@ -619,6 +619,7 @@ def review_basic(
             "section",
             "section_key",
             "original_number",
+            "bbox",
         ):
             if field in original_item:
                 item[field] = original_item[field]

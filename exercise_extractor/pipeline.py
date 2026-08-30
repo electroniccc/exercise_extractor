@@ -6,6 +6,7 @@ import os
 
 from . import answers, exampaper, exercise_book
 from .extraction import combine_section_pages, extract_exercises
+from .exercise_bbox import attach_exercise_bboxes
 from .html_tables import replace_html_tables
 from .ocr import build_sections, create_ocr_pipeline, ocr_pages
 from .oss import apply_oss_images, oss_config_from_args
@@ -81,6 +82,9 @@ def run_pipeline(
     # exampaper 自带答案/解析处理，不走通用答案章节匹配
     if args.doc_type != "exampaper":
         answers.extract_and_match(exercise_sections, markdown_path)
+
+    # 使用 PaddleOCR-VL 原始 JSON 中的 parsing block，把题目映射回页面坐标。
+    attach_exercise_bboxes(exercise_sections, markdown_path)
 
     # OSS/MinIO：把结果里的本地图片上传，引用替换为 OSS URL
     oss_cfg = oss_config_from_args(args)
@@ -229,6 +233,7 @@ def iter_sections(
                     )
                     yield from walk(node.get("children", []), node_path)
                     continue
+                attach_exercise_bboxes([node], markdown_path)
                 if oss_cfg:
                     apply_oss_images([node], markdown_path, oss_cfg, oss_cache)
                 if write_outputs_enabled:

@@ -32,6 +32,7 @@ def main() -> None:
     unit.test_exercise_book_sections()
     unit.test_exampaper_build_node()
     unit.test_api_contract()
+    unit.test_exercise_bbox()
     unit.test_llm_review_contract()
     unit.test_review_removes_supplemented_answers()
     unit.test_review_keeps_partial_tool_result()

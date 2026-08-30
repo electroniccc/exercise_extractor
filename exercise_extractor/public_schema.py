@@ -20,6 +20,30 @@ def _is_numbered_exercise(item: dict[str, Any]) -> bool:
     return not normalized.startswith(("例", "例题", "example"))
 
 
+def _public_bbox(value: Any) -> list[dict[str, Any]]:
+    """把调用方/内部 bbox 收敛为固定、可 JSON 序列化的公共格式。"""
+    if not isinstance(value, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        page = item.get("page")
+        bbox = item.get("bbox")
+        if isinstance(page, bool) or not isinstance(page, int) or page < 1:
+            continue
+        if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+            continue
+        try:
+            coordinates = [float(coordinate) for coordinate in bbox]
+        except (TypeError, ValueError):
+            continue
+        if coordinates[2] <= coordinates[0] or coordinates[3] <= coordinates[1]:
+            continue
+        result.append({"page": page, "bbox": coordinates})
+    return result
+
+
 def _public_exercise(item: dict[str, Any]) -> dict[str, Any]:
     """把内部 Exercise 归一化为固定字段的 JSON object。"""
     return {
@@ -33,6 +57,7 @@ def _public_exercise(item: dict[str, Any]) -> dict[str, Any]:
         "section": item.get("section"),
         "section_key": item.get("section_key"),
         "pages": list(item.get("pages") or []),
+        "bbox": _public_bbox(item.get("bbox")),
     }
 
 

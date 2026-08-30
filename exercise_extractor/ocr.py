@@ -3,7 +3,7 @@
 - build_sections：跑 toc_forge 目录识别（阿里云 vLLM 视觉 API）得到目录树，
   经 build_section_tree 筛出习题区域；
 - create_ocr_pipeline / ocr_pages：用 PaddleOCR-VL（vllm-server）对
-  未缓存的习题页做 OCR，结果按 PDF 哈希缓存（page_N/page.md）。
+  未缓存的习题页做 OCR，结果按 PDF 哈希缓存（page_N/page.md + page.json）。
 """
 
 import argparse
@@ -115,6 +115,14 @@ def _save_ocr_result(
     if os.path.exists(save_path):
         return
     res.save_to_markdown(save_path=save_path, show_formula_number=True)
+    # parsing_res_list 同时保留了 block_content/block_bbox，后处理可据此把
+    # 结构化习题映射回 PDF 页面。JSON 保存失败不应让已经成功的 OCR 文本作废。
+    try:
+        res.save_to_json(
+            save_path=os.path.join(page_dir, "page.json"), ensure_ascii=False
+        )
+    except Exception as exc:
+        logger.warning("第 %d 页 OCR JSON 保存失败，bbox 将为空: %s", page_num, exc)
     # 重跑成功后清掉上次失败的标记，让 FAILED.txt 只代表当前状态
     failed_path = os.path.join(page_dir, "FAILED.txt")
     if os.path.exists(failed_path):

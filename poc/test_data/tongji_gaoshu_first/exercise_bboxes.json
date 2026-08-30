@@ -1,0 +1,119 @@
+[
+  {
+    "index": 0,
+    "number": "1",
+    "content": "假设函数  $ f(x) $ 在闭区间  $ [0,1] $ 上连续，并且对  $ [0,1] $ 上任一点 x 有  $ 0 \\leq f(x) \\leq 1 $。试证明  $ [0,1] $ 中必存在一点 c，使得  $ f(c) = c $（c 称为函数  $ f(x) $ 的不动点）。",
+    "bbox": [
+      78.0,
+      702.0,
+      851.0,
+      757.0
+    ],
+    "match_score": 1.0,
+    "matched_block_content": "1. 假设函数  $ f(x) $ 在闭区间  $ [0,1] $ 上连续，并且对  $ [0,1] $ 上任一点 x 有  $ 0 \\leq f(x) \\leq 1 $。试证明  $ [0,1] $ 中必存在一点 c，使得  $ f(c) = c $（c 称为函数  $ f(x) $ 的不动点）。"
+  },
+  {
+    "index": 1,
+    "number": "2",
+    "content": "证明方程  $ x^{5}-3x=1 $ 至少有一个根介于 1 和 2 之间.",
+    "bbox": [
+      112.0,
+      762.0,
+      566.0,
+      785.0
+    ],
+    "match_score": 1.0,
+    "matched_block_content": "2. 证明方程  $ x^{5}-3x=1 $ 至少有一个根介于 1 和 2 之间."
+  },
+  {
+    "index": 2,
+    "number": "3",
+    "content": "证明方程  $ x = a \\sin x + b $，其中 a > 0, b > 0，至少有一个正根，并且它不超过  $ a + b $.",
+    "bbox": [
+      112.0,
+      791.0,
+      762.0,
+      814.0
+    ],
+    "match_score": 1.0,
+    "matched_block_content": "3. 证明方程  $ x = a \\sin x + b $，其中 a > 0, b > 0，至少有一个正根，并且它不超过  $ a + b $."
+  },
+  {
+    "index": 3,
+    "number": "4",
+    "content": "证明任一最高次幂的指数为奇数的代数方程\n\n $$ a_{0}x^{2n+1}+a_{1}x^{2n}+\\cdots+a_{2n}x+a_{2n+1}=0 $$ \n\n至少有一实根，其中  $ a_{0}, a_{1}, \\cdots, a_{2n+1} $ 均为常数， $ n \\in \\mathbb{N} $",
+    "bbox": [
+      113.0,
+      821.0,
+      520.0,
+      844.0
+    ],
+    "match_score": 0.8838,
+    "matched_block_content": "4. 证明任一最高次幂的指数为奇数的代数方程"
+  },
+  {
+    "index": 4,
+    "number": "5",
+    "content": "若  $ f(x) $ 在  $ [a,b] $ 上连续， $ a<x_{1}<x_{2}<\\cdots<x_{n}<b $ （ $ n\\geqslant3 $），则在  $ (x_{1},x_{n}) $ 内至少有一点  $ \\xi $，使  $ f(\\xi)=\\frac{f(x_{1})+f(x_{2})+\\cdots+f(x_{n})}{n} $.",
+    "bbox": [
+      73.0,
+      909.0,
+      854.0,
+      980.0
+    ],
+    "match_score": 1.0,
+    "matched_block_content": "5. 若  $ f(x) $ 在  $ [a,b] $ 上连续， $ a<x_{1}<x_{2}<\\cdots<x_{n}<b $ （ $ n\\geqslant3 $），则在  $ (x_{1},x_{n}) $ 内至少有一点  $ \\xi $，使  $ f(\\xi)=\\frac{f(x_{1})+f(x_{2})+\\cdots+f(x_{n})}{n} $."
+  },
+  {
+    "index": 5,
+    "number": "6",
+    "content": "设函数  $ f(x) $ 对于闭区间  $ [a, b] $ 上的任意两点 x, y，恒有  $ |f(x) - f(y)| \\leq L|x - y| $，其中 L 为正常数，且  $ f(a) \\cdot f(b) < 0 $。证明：至少有一点  $ \\xi \\in (a, b) $，使得  $ f(\\xi) = 0 $。",
+    "bbox": [
+      78.0,
+      993.0,
+      856.0,
+      1047.0
+    ],
+    "match_score": 1.0,
+    "matched_block_content": "6. 设函数  $ f(x) $ 对于闭区间  $ [a, b] $ 上的任意两点 x, y，恒有  $ |f(x) - f(y)| \\leq L|x - y| $，其中 L 为正常数，且  $ f(a) \\cdot f(b) < 0 $。证明：至少有一点  $ \\xi \\in (a, b) $，使得  $ f(\\xi) = 0 $。"
+  },
+  {
+    "index": 6,
+    "number": "7",
+    "content": "证明：若  $ f(x) $ 在  $ (-\\infty, +\\infty) $ 内连续，且  $ \\lim_{x \\to +\\infty} f(x) $ 存在，则  $ f(x) $ 必在  $ (-\\infty, +\\infty) $ 内有界.",
+    "bbox": [
+      107.0,
+      1051.0,
+      833.0,
+      1076.0
+    ],
+    "match_score": 1.0,
+    "matched_block_content": "7. 证明：若  $ f(x) $ 在  $ (-\\infty, +\\infty) $ 内连续，且  $ \\lim_{x \\to +\\infty} f(x) $ 存在，则  $ f(x) $ 必在  $ (-\\infty, +\\infty) $ 内有界."
+  },
+  {
+    "index": 7,
+    "number": "8",
+    "content": "在什么条件下， $ (a,b) $ 内的连续函数  $ f(x) $ 为一致连续？",
+    "bbox": [
+      107.0,
+      1088.0,
+      596.0,
+      1111.0
+    ],
+    "match_score": 1.0,
+    "matched_block_content": "8. 在什么条件下， $ (a,b) $ 内的连续函数  $ f(x) $ 为一致连续？"
+  },
+  {
+    "index": 8,
+    "number": "1",
+    "content": "在“充分”“必要”和“充分必要”三者中选择一个正确的填入下列空格内：",
+    "bbox": [
+      116.0,
+      1215.0,
+      754.0,
+      1239.0
+    ],
+    "match_score": 1.0,
+    "matched_block_content": "1. 在“充分”“必要”和“充分必要”三者中选择一个正确的填入下列空格内："
+  }
+]
