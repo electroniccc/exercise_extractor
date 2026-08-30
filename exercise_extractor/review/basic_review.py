@@ -643,3 +643,97 @@ def review_basic(
     if result is None:  # pragma: no cover - reviewed_items 已做非空校验
         raise ValueError("审校结果没有有效习题")
     return result
+
+
+def review_basic_exercise(
+    section: dict[str, Any],
+    exercise_indices: list[int],
+    *,
+    base_url: str | None = None,
+    api_key: str | None = None,
+    model: str = DEFAULT_REVIEW_MODEL,
+    client: Any = None,
+) -> list[dict[str, Any]]:
+    """审校 section 中指定下标的题目，返回对应 Exercise JSON 列表。
+
+    多个下标会在一次 LLM 请求中提交，返回顺序与 ``exercise_indices`` 一致。
+    """
+    from ..parse_md_exercises import split_exercises, split_solutions_for_section
+
+    if not isinstance(section, dict) or not isinstance(exercise_indices, list):
+        raise TypeError("section 必须是 JSON object，exercise_indices 必须是数组")
+    from ..public_schema import normalize_public_section
+
+    normalized = normalize_public_section(section)
+    document_name = normalized.get("document_name")
+    section_name = normalized.get("path") or normalized.get("title")
+    if not document_name or not section_name:
+        raise ValueError("section.document_name/path 不能为空")
+    if not exercise_indices or any(
+        isinstance(i, bool) or not isinstance(i, int) or i < 0 or i >= len(normalized["exercises"])
+        for i in exercise_indices
+    ):
+        raise ValueError("exercise_indices 必须是非空且范围有效的整数数组")
+    if len(set(exercise_indices)) != len(exercise_indices):
+        raise ValueError("exercise_indices 不能包含重复下标")
+    selected = [normalized["exercises"][i] for i in exercise_indices]
+    if any(not (item.get("content") or "").strip() for item in selected):
+        raise ValueError("选中的 exercise.content 不能为空")
+    source_node = {
+        "has_exercise": True,
+        "title": section_name,
+        "exercises": [dict(item) for item in selected],
+    }
+    from ..postprocess import render_exercise_markdown
+
+    source = render_exercise_markdown(source_node, include_section_headings=False)
+    revised = review_markdown_basic(
+        source,
+        document_name,
+        section_name,
+        base_url=base_url,
+        api_key=api_key,
+        model=model,
+        client=client,
+    ).strip()
+    revised, _ = _remove_unexpected_answer_segments(source, revised)
+    items = [
+        item
+        for item in split_exercises(revised, check_section_end=False, split_solutions=False)
+        if item.get("number") != "__preamble__"
+    ]
+    if len(items) != len(selected):
+        raise ValueError("LLM 返回内容无法解析为指定数量的习题")
+    split_solutions_for_section(
+        items,
+        section_name,
+        force=any(item.get("solution_steps") for item in selected),
+    )
+    result: list[dict[str, Any]] = []
+    for item, original in zip(items, selected):
+        for field in (
+            "pages",
+            "question_type",
+            "section",
+            "section_key",
+            "original_number",
+            "bbox",
+        ):
+            if field in original:
+                item[field] = original[field]
+        result.append({
+            "number": str(item.get("number") or original.get("number") or ""),
+            "original_number": item.get("original_number"),
+            "separator": item.get("separator") or original.get("separator") or ".",
+            "content": item.get("content") or "",
+            "solution_steps": item.get("solution_steps") or "",
+            "answer": item.get("answer") or "",
+            "question_type": item.get("question_type")
+            or original.get("question_type")
+            or "short_answer",
+            "section": item.get("section"),
+            "section_key": item.get("section_key"),
+            "pages": list(item.get("pages") or []),
+            "bbox": list(item.get("bbox") or []),
+        })
+    return result

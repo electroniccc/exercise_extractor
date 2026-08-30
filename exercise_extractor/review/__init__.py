@@ -9,6 +9,7 @@ from .basic_review import (
     DEFAULT_REVIEW_BASE_URL,
     DEFAULT_REVIEW_MODEL,
     review_basic,
+    review_basic_exercise,
     review_markdown_basic,
 )
 from .math_review import REVIEW_STATUSES, remove_review_statuses, review_markdown_with_tools
@@ -20,6 +21,7 @@ __all__ = [
     "REVIEW_STATUSES",
     "remove_review_statuses",
     "review_basic",
+    "review_basic_exercise",
     "review_markdown_basic",
     "review_markdown_with_tools",
 ]

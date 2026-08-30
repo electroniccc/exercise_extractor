@@ -158,6 +158,26 @@ def test_unit_boundaries() -> None:
         "试卷解析以证明开头标记为证明题",
         solution_starts_with_proof("1. 题目。\n解析：证明这是证明过程。"),
     )
+    from exercise_extractor.exampaper import _normalize_choice_markers
+
+    check(
+        "选择题选项标记统一为字母加点",
+        _normalize_choice_markers("(A) 甲\n(B)．乙\nC) 丙\nD、丁")
+        == "A. 甲\nB. 乙\nC. 丙\nD. 丁",
+    )
+    fill_numbered = _split_section_exercises(
+        {
+            "lines": ["11) 题11", "12）题12", "13) 题13", "4) 题14", "5）题15", "(6) 题16"],
+            "question_type": "fill_in_blank",
+            "section_key": "二、填空题",
+            "title": "二、填空题",
+            "start_page": 1,
+        }
+    )
+    check(
+        "填空题题号首位缺失时连续修复",
+        [e["number"] for e in fill_numbered] == ["11", "12", "13", "14", "15", "16"],
+    )
     escaped_number = _split_section_exercises(
         {
             "lines": [
@@ -652,6 +672,19 @@ def test_llm_review_contract() -> None:
         and reviewed_section["path"] == "第一章/习题1"
         and "children" not in reviewed_section
         and reviewed_section["content"]["basic_review"],
+    )
+    from exercise_extractor.review import review_basic_exercise
+
+    reviewed_exercise = review_basic_exercise(
+        {**section, "document_name": "测试书"},
+        [0],
+        client=basic_client,
+    )
+    check(
+        "公共 review_basic_exercise 返回单题 JSON",
+        isinstance(reviewed_exercise, list)
+        and reviewed_exercise[0]["number"] == "1"
+        and reviewed_exercise[0]["content"] == "题目，内容",
     )
 
     tool_call = SimpleNamespace(

@@ -144,7 +144,7 @@ schema 的 Python `dict`/`list`（`extract_exercise` 为逐节 yield 的 dict，
 ### 公共 JSON LLM 审校接口
 
 ```python
-from exercise_extractor import extract_exercise, match_answers, review_basic
+from exercise_extractor import extract_exercise, match_answers, review_basic, review_basic_exercise
 
 sections = list(extract_exercise("xxx.pdf", doc_type="textbook"))
 sections = match_answers(sections, answer_section_json)
@@ -152,9 +152,13 @@ fixed = review_basic(
     sections[0],
     base_url="https://api.openai.com/v1", api_key="...", model="...",
 )
+# 少量题目需要复核时，可只提交一个 Exercise JSON
+fixed_exercise = review_basic_exercise(
+    sections[0], [0]
+)
 ```
 
-`match_answers` 接受公共 section JSON 列表和完整答案 section JSON，返回新的填充后列表；`review_basic` 接受一个公共 section JSON，返回新的审校后 section JSON。两个接口默认使用阿里云 OpenAI-compatible 地址和 `deepseek-v4-flash-0731`，也可以在调用时
+`match_answers` 接受公共 section JSON 列表和完整答案 section JSON，返回新的填充后列表；`review_basic` 接受一个公共 section JSON，返回新的审校后 section JSON；`review_basic_exercise` 接受公共 section JSON 和其中题目的下标数组，在一次请求中审校这些题目并返回对应的 Exercise JSON 列表，便于只复核少量问题题目。三个接口默认使用阿里云 OpenAI-compatible 地址和 `deepseek-v4-flash-0731`，也可以在调用时
 传 `base_url`、`api_key`、`model` 覆盖。内部仍以整节 Markdown 调用 LLM，但 Markdown 不再是公共接口格式；basic review 按模板校对 OCR 文字、标点与 KaTeX/LaTeX 格式。数学审校模块暂时只保留、不继续开发；CLI 的 `--review` 默认暂时只执行第一轮基础审校，
 加 `--review-with-tools` 才启用第二轮数学审校；`--review-max-rounds` 仅在启用工具审校时生效。也可通过
 `OPENAI_BASE_URL`、`OPENAI_API_KEY`（或 `ALIYUN_API_KEY`）提供默认地址和密钥；

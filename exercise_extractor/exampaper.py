@@ -100,12 +100,12 @@ _MARKER_SPLIT_RE = re.compile(
 _PAREN_NUM_RE = re.compile(r"^\s*[（(]\s*(\d{1,3})\s*[）)]\s*", re.MULTILINE)
 # 选择题/填空题的题号行：1. / 1、/ 1.C / （1）题目（先经 _PAREN_NUM_RE 转成 1.）
 _ITEM_NUM_RE = re.compile(
-    r"^\s*[（(]?\s*(\d{1,3})\s*[）)]?\s*(?:\\[.．]|[.．、])\s*(.*)$"
+    r"^\s*[（(]?\s*(\d{1,3})\s*(?:[）)]?\s*(?:\\[.．]|[.．、])|[）)])\s*(.*)$"
 )
 # 简答题的题号行：17. 内容 / 17、内容（要求点号后有空白，避免把
 # “17.2024年…” 里的年份当成多级题号；也避免把行首小数 1.6 当题号）
 _SHORT_ANSWER_NUM_RE = re.compile(
-    r"^\s*(\d{1,3})\s*(?:\\[.．]|[.．、])(?!\d)\s*(.*)$"
+    r"^\s*(\d{1,3})\s*(?:\\[.．]|[.．、]|[）)])(?!\d)\s*(.*)$"
 )
 _DUPLICATE_SOLUTION_RE = re.compile(
     r"^\s*(?:"
@@ -113,6 +113,35 @@ _DUPLICATE_SOLUTION_RE = re.compile(
     r"|(?:解答|解析|详解|分析|点睛|证明|证|解|答)\s*[：:.．]?"
     r")"
 )
+_CHOICE_MARKER_PAREN_RE = re.compile(
+    r"(?<![A-Za-z])[（(]([ABCD])[）)]\s*[.．]?"
+)
+_CHOICE_MARKER_ALT_RE = re.compile(
+    r"(?<![A-Za-z])\b([ABCD])[)）、：:]\s*"
+)
+
+
+def _normalize_choice_markers(content: str) -> str:
+    """统一选择题选项标记为 ``A. 内容`` 形式。"""
+    content = _CHOICE_MARKER_PAREN_RE.sub(r"\1. ", content)
+    return _CHOICE_MARKER_ALT_RE.sub(r"\1. ", content)
+
+
+def _repair_truncated_numbers(exercises: list[Exercise]) -> None:
+    """修复填空/选择题中题号首位被 OCR 吞掉的连续编号。"""
+    previous: int | None = None
+    for item in exercises:
+        try:
+            number = int(str(item.get("number", "")))
+        except ValueError:
+            previous = None
+            continue
+        if previous is not None and number < 10 and number <= previous and previous >= 10:
+            candidate = previous // 10 * 10 + number
+            if candidate > previous:
+                item["number"] = str(candidate)
+                number = candidate
+        previous = number
 # OCR 可能把整份试卷的题号行都渲染成标题（“### 18. （本小题满分…）”），
 # 通用“标题还原”规则看到下一个标题就停止扫描，连续标题时还原不了。
 # 试卷题型小节是已知的题目区域，直接把“# + 数字 + 分隔符”降级为普通题号行。
@@ -538,6 +567,7 @@ def _split_section_exercises(section: TypeSection) -> list[Exercise]:
         exercises = _split_simple_numbered_exercises(
             chunk, section.get("start_page")
         )
+        _repair_truncated_numbers(exercises)
     else:
         chunk = _parenthesized_question_numbers_to_plain(chunk)
         exercises = _split_short_answer_exercises(
@@ -700,6 +730,11 @@ def extract_exercises(sections: list[SectionNode]) -> None:
             exercises.extend(_split_section_exercises(section))
         # 内嵌解析：【答案】/【解】拆到 answer / solution_steps
         split_inline_answers(exercises)
+        # 内嵌答案已拆出后，再只规范选择题题干中的选项标记，避免把答案
+        # ``（C）`` 误改成题干选项。
+        for item in exercises:
+            if item.get("question_type") in ("single_choice", "multiple_choice"):
+                item["content"] = _normalize_choice_markers(item.get("content", ""))
         # 解析标记后若正文以“证明/证”开头，简答题改标为证明题；选择题、
         # 填空题等保留原题型，避免把解析文字误当题型。
         for item in exercises:
