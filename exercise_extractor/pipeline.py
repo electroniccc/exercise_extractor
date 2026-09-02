@@ -44,6 +44,7 @@ def run_pipeline(
     args: argparse.Namespace,
     write_outputs_enabled: bool = True,
     print_summary_enabled: bool = True,
+    match_answers_enabled: bool = True,
 ) -> list:
     """执行完整提取链，返回内部习题节点树（仅供 CLI/适配层使用）。
 
@@ -79,9 +80,15 @@ def run_pipeline(
     else:
         extract_exercises(exercise_sections)
 
-    # exampaper 自带答案/解析处理，不走通用答案章节匹配
+    # exampaper 自带答案/解析处理，不走通用答案章节匹配。WebUI 在用户
+    # 明确点击“匹配答案”前仍需提取答案 section 供答案 tab 展示，但关闭
+    # 回填步骤，避免题目在用户操作前自动出现答案。
     if args.doc_type != "exampaper":
-        answers.extract_and_match(exercise_sections, markdown_path)
+        answers.extract_and_match(
+            exercise_sections,
+            markdown_path,
+            match_enabled=match_answers_enabled,
+        )
 
     # 使用 PaddleOCR-VL 原始 JSON 中的 parsing block，把题目映射回页面坐标。
     attach_exercise_bboxes(exercise_sections, markdown_path)

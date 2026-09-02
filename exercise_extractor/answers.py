@@ -466,8 +466,17 @@ def _combine_pages(page_range: list[int], markdown_path: str) -> str:
     return content
 
 
-def extract_and_match(sections, markdown_path: str) -> None:
-    """处理树中所有 is_answers 节点：拼页、切块、匹配，结果写回 node["answer_sections"]。"""
+def extract_and_match(
+    sections,
+    markdown_path: str,
+    *,
+    match_enabled: bool = True,
+) -> None:
+    """提取答案 section，并按需匹配回习题。
+
+    ``match_enabled=False`` 仍会完成答案页拼接和切块，使调用方能够展示
+    答案 tab；但不会修改任何习题的 answer/solution_steps 字段。
+    """
     answers_nodes: list = []
 
     def collect(nodes) -> None:
@@ -489,10 +498,12 @@ def extract_and_match(sections, markdown_path: str) -> None:
                         new_text = replace_html_tables(text)
                         if new_text != text:
                             item[field] = new_text
-        match_answer_sections(answer_sections, sections)
+        if match_enabled:
+            match_answer_sections(answer_sections, sections)
         node["answer_sections"] = answer_sections
     # 逐题填充：把答案内容填进对应习题的 answer 字段
-    fill_exercise_answers(sections)
+    if match_enabled:
+        fill_exercise_answers(sections)
     # 填充用的临时挂载不留在最终输出里（答案节点上的 answer_sections 保留）
 
     def cleanup(nodes) -> None:
