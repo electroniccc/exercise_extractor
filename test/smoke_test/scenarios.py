@@ -1,6 +1,6 @@
-"""场景化测试：每个 test_scenarios/*.txt 对应一个测试函数。
+"""场景化测试：每个 test/test_scenarios/*.txt 对应一个测试函数。
 
-测试启动后依次扫描 test_scenarios 目录，按文件名经 SCENARIO_TESTS
+测试启动后依次扫描 test/test_scenarios 目录，按文件名经 SCENARIO_TESTS
 分发到这里的函数；多页场景（textbook_fake_cache_page1/2.txt）由主文件
 注册，附属文件由主场景测试函数自行加载。
 """
@@ -79,6 +79,35 @@ def test_exercise_book_prefix() -> None:
     check(
         "习题前缀归一",
         exercise_book._normalize_exercise_prefixes(content) == "1. a\n2. b\n",
+    )
+
+
+def test_textbook_decimal_display_formula() -> None:
+    """显示公式中的 74.000 不能被误判为多级题号。"""
+    from exercise_extractor.extraction import extract_exercises
+
+    node = {
+        "title": "习题",
+        "has_exercise": True,
+        "children": [],
+        "exercise_content": load_scenario("textbook_decimal_display_formula.txt"),
+    }
+    extract_exercises([node])
+    exercises = node["exercises"]
+    check(
+        "公式小数不截断后续习题",
+        [item["number"] for item in exercises] == ["1", "2", "3", "4", "5", "6"],
+        f"got {[item['number'] for item in exercises]}",
+    )
+    check(
+        "公式内小数保留在第一题",
+        "74.000\\quad73.998\\quad74.006\\quad74.002"
+        in exercises[0]["content"],
+    )
+    check(
+        "第二题从真实题干开始",
+        exercises[1]["content"].startswith("设  $ X_{1}")
+        and "74.000" not in exercises[1]["content"],
     )
 
 
@@ -378,6 +407,7 @@ def test_figure_group() -> None:
 # 场景文件 → 测试函数注册表
 SCENARIO_TESTS = {
     "textbook_fake_cache_page1.txt": test_textbook_fake_cache,
+    "textbook_decimal_display_formula.txt": test_textbook_decimal_display_formula,
     "exercise_book_prefix.txt": test_exercise_book_prefix,
     "exercise_book_no_toc.txt": test_exercise_book_no_toc,
     "answers_split_sections.txt": test_answers_split,

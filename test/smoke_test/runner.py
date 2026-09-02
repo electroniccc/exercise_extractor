@@ -1,4 +1,4 @@
-"""测试入口：扫描 test_scenarios 依次跑场景，再跑单元测试。"""
+"""测试入口：扫描 test/test_scenarios 依次跑场景，再跑单元测试。"""
 
 import os
 import sys
@@ -9,7 +9,7 @@ from .scenarios import SCENARIO_TESTS, SECONDARY_SCENARIO_FILES
 
 def main() -> None:
     sys.path.insert(0, common.ROOT)
-    print("== 场景化测试（test_scenarios/*.txt）==")
+    print("== 场景化测试（test/test_scenarios/*.txt）==")
     for fname in sorted(os.listdir(common.SCENARIO_DIR)):
         if not fname.endswith(".txt") or fname in SECONDARY_SCENARIO_FILES:
             continue
@@ -18,7 +18,7 @@ def main() -> None:
             common.check(
                 f"场景未注册: {fname}",
                 False,
-                "test_scenarios 中的 txt 未在 SCENARIO_TESTS 注册",
+                "test/test_scenarios 中的 txt 未在 SCENARIO_TESTS 注册",
             )
             continue
         print(f"\n-- 场景: {fname} --")

@@ -85,6 +85,10 @@ HEADING_RE = re.compile(r"^\s*#")
 # 页间标记：由 PDF 分页流程（combine_section_pages）插入，用于页码溯源；
 # 纯 markdown 输入不含此标记，此时习题项不带 pages 字段
 PAGE_MARKER_RE = re.compile(r"^\s*<!--\s*page:\s*(\d+)\s*-->\s*$")
+# 块公式定界符。题号切分只应发生在正文行，不能把 ``$$ 74.000 ... $$``
+# 这类显示公式中的数值误识别为多级题号。``\\[`` / ``\\]`` 同样按块公式处理。
+DISPLAY_MATH_DELIMITER_RE = re.compile(r"(?<!\\)\$\$|\\\[|\\\]")
+DISPLAY_MATH_START_RE = re.compile(r"^\s*(?:\$\$|\\\[)")
 # 正文编号环境：定理/定义/引理/命题/推论（含英文）。数学教材正文里这类环境
 # 独占一行（如“定理 5.1”“定义3.1”），而真实习题的题干/解答里几乎不会出现
 # 这样的行。刻意不含“例”：例题在正文叙述里也常成行出现（如“例 1.24 证明…”），
@@ -531,6 +535,19 @@ def _parse_number_label(text: str) -> tuple[str, tuple[int, ...]] | None:
     return None
 
 
+def _advance_display_math_state(line: str, in_display_math: bool) -> bool:
+    """按一行内的显示公式定界符更新状态。"""
+    for match in DISPLAY_MATH_DELIMITER_RE.finditer(line):
+        delimiter = match.group(0)
+        if delimiter == "$$":
+            in_display_math = not in_display_math
+        elif delimiter == r"\[":
+            in_display_math = True
+        else:  # ``\]``
+            in_display_math = False
+    return in_display_math
+
+
 def _keys_continuous(a: tuple[int, ...], b: tuple[int, ...]) -> bool:
     """b 是否紧接 a：段数相同、前缀相同、末位递增 1~2（允许 OCR 漏号）。"""
     return (
@@ -617,6 +634,7 @@ def split_exercises(
     current_page: int | None = None  # 最近一次页码标记
     exercise_start_page: int | None = None
     exercise_end_page: int | None = None
+    in_display_math = False
 
     def flush() -> None:
         nonlocal current, current_num, current_sep, current_section
@@ -648,6 +666,20 @@ def split_exercises(
         m_page = PAGE_MARKER_RE.match(line)
         if m_page:
             current_page = int(m_page.group(1))
+            continue
+
+        # 显示公式内的数字（尤其是 74.000、1.001 等）绝不是题号。公式可以
+        # 单行闭合，也可以跨多行；在块内仅原样归入当前题目。
+        is_display_math_line = in_display_math or bool(
+            DISPLAY_MATH_START_RE.match(line)
+        )
+        if is_display_math_line:
+            if not exercises and current_num is None:
+                leading.append(line)
+            else:
+                current.append(line)
+                exercise_end_page = current_page
+            in_display_math = _advance_display_math_state(line, in_display_math)
             continue
 
         if HEADING_RE.match(line):
@@ -704,7 +736,15 @@ def split_exercises(
                     sep = None
                     stripped = None
 
-        if num_key is not None and num_key > prev_key:
+        # 一个标题区间内，真正的题号序列不会从 ``1.`` 突然变成 ``74.000``
+        # 或反过来。多级题号当然仍支持，但必须保持同一层级；这也是 OCR 漏掉
+        # 显示公式定界符时，对公式小数误判的第二层防线。
+        is_new_exercise = (
+            num_key is not None
+            and num_key > prev_key
+            and (not prev_key or len(num_key) == len(prev_key))
+        )
+        if is_new_exercise:
             flush()
             # pending 里的标题行作为“所属小节”记录，不再拼进题干；
             # 行首的 LaTeX/星号噪声（如 “##  $ ^{*} $习题 7-10”）一并清掉，

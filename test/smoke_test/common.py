@@ -8,7 +8,7 @@ import sys
 ROOT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 )
-SCENARIO_DIR = os.path.join(ROOT, "test_scenarios")
+SCENARIO_DIR = os.path.join(ROOT, "test", "test_scenarios")
 # 用当前解释器跑 CLI 子进程，避免绑定本机 .venv 路径
 PY = sys.executable
 
@@ -38,7 +38,7 @@ def run_cli(args: list[str], timeout: int = 180) -> subprocess.CompletedProcess:
 
 
 def load_scenario(name: str) -> str:
-    """读取 test_scenarios 下的场景文本。"""
+    """读取 test/test_scenarios 下的场景文本。"""
     with open(os.path.join(SCENARIO_DIR, name), encoding="utf-8") as f:
         return f.read()
 

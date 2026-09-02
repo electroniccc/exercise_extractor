@@ -27,8 +27,8 @@
 | `main.py`（仓库根） | 兼容入口 shim：`python main.py ...` 等价于 `python -m exercise_extractor ...` |
 | `pyproject.toml` | pip 打包配置（setuptools），console script `exercise-extractor` |
 | `start_minio.sh` | 启动本地 MinIO docker（S3 兼容 OSS 后端）：默认 http://127.0.0.1:9000，minioadmin/minioadmin，桶 exercises 并设为公开读；环境变量可覆盖 |
-| `test/smoke_test/` | 冒烟测试模块（87 项）：`common.py` 公共设施（断言计数/CLI 子进程/场景加载）、`scenarios.py` 场景测试与注册表、`unit.py` 单元断言、`runner.py` 入口；运行 `python -m test.smoke_test`。场景化测试文本统一放 `test_scenarios/*.txt`，每个场景一个 txt |
-| `test_scenarios/` | 场景化测试文本：每个场景一个 txt（近真题/旧真题/解析/文末答案/表格答案区/伪造缓存页/习题集等），smoke_test 依次扫描并按文件名分发 |
+| `test/smoke_test/` | 冒烟测试模块（87 项）：`common.py` 公共设施（断言计数/CLI 子进程/场景加载）、`scenarios.py` 场景测试与注册表、`unit.py` 单元断言、`runner.py` 入口；运行 `python -m test.smoke_test`。场景化测试文本统一放 `test/test_scenarios/*.txt`，每个场景一个 txt |
+| `test/test_scenarios/` | 场景化测试文本：每个场景一个 txt（近真题/旧真题/解析/文末答案/表格答案区/伪造缓存页/习题集等），smoke_test 依次扫描并按文件名分发 |
 
 ## 主流程（main.py）
 
@@ -64,6 +64,7 @@ exampaper 分支不经过第 1/5 步：`build_sections` 先返回整卷根节点
 ## 关键设计决策
 
 - **结构驱动、不针对特定教材**：切分靠「行首 `N + 分隔符` + 题号单调递增」判新题，用 `(?!\d)` 防止把 `2.5` 等小数误判为题号；允许 OCR 噪声前缀（`*^$` 等）。
+- **显示公式内不切题**：`split_exercises` 跟踪 `$$...$$` 与 `\[...\]` 块，块内数值不参与题号识别，避免把 `74.000` 这类公式数据误作多级题号；同一标题区间内题号层级必须一致，作为 OCR 漏公式定界符时的兜底。
 - **目录习题关键词**：`toc_detect.EXERCISE_TITLE_KEYWORDS` 覆盖 习题/练习/作业/思考题/例题（含补充例题）等中英文关键词——思考题、例题/补充例题作为显式习题目录项参与提取（如周衍柏《理论力学教程》各章"思考题""补充例题"）。
 - **多级题号允许 2 段**：支持 "1.1"、"5.8" 这类「章.题」编号（周世勋《量子力学教程》等教材）。2 段数字在正文里也可能是节引用（如 "4.9 节的定理"），由后续的小节归属过滤 / 连续性校验 / 节尾匹配规则兜底。
 - **显式习题节点从自身标题行截断**：目录页码可能落在上一节正文上（页面上半是例题、下半才是 "## 习题"），提取前先 `truncate_to_section_heading` 截到本节点自己的标题行，避免正文混入第一题。
@@ -190,7 +191,7 @@ SMOKE_TEST_FULL_PIPELINE_DOC_TYPE=exampaper SMOKE_TEST_FULL_PIPELINE_PDF=... pyt
 ```
 
 测试拆分为 `test/smoke_test/` 下的模块：场景测试（`scenarios.py`）按
-`test_scenarios/*.txt` 依次加载分发，单元断言在 `unit.py`，公共设施在
+`test/test_scenarios/*.txt` 依次加载分发，单元断言在 `unit.py`，公共设施在
 `common.py`，入口在 `runner.py`。测试不绑定当前机器：CLI 子进程用
 `sys.executable`，全缓存管线默认跳过（环境变量启用），场景文本全部自包含。
 
