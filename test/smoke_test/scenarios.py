@@ -85,6 +85,7 @@ def test_exercise_book_prefix() -> None:
 def test_textbook_decimal_display_formula() -> None:
     """显示公式中的 74.000 不能被误判为多级题号。"""
     from exercise_extractor.extraction import extract_exercises
+    from exercise_extractor.public_schema import public_section_from_node
 
     node = {
         "title": "习题",
@@ -92,7 +93,8 @@ def test_textbook_decimal_display_formula() -> None:
         "children": [],
         "exercise_content": load_scenario("textbook_decimal_display_formula.txt"),
     }
-    extract_exercises([node])
+    chapter = {"title": "第七章 参数估计", "children": [node]}
+    extract_exercises([chapter])
     exercises = node["exercises"]
     check(
         "公式小数不截断后续习题",
@@ -108,6 +110,17 @@ def test_textbook_decimal_display_formula() -> None:
         "第二题从真实题干开始",
         exercises[1]["content"].startswith("设  $ X_{1}")
         and "74.000" not in exercises[1]["content"],
+    )
+    public = public_section_from_node(
+        node,
+        path="第七章 参数估计/习题",
+        document_name="测试教材",
+    )
+    check(
+        "泛化习题公共 section title 使用章节路径",
+        public is not None
+        and public["title"] == "第七章 参数估计 习题"
+        and public["path"] == "第七章 参数估计/习题",
     )
 
 

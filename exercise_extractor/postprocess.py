@@ -13,7 +13,7 @@ import re
 from typing import NotRequired, TypedDict
 
 from .extraction import SectionNode
-from .public_schema import public_section_from_node
+from .public_schema import _public_section_title, public_section_from_node
 
 logger = logging.getLogger(__name__)
 
@@ -164,23 +164,31 @@ def _sanitize_filename(title: str) -> str:
     return re.sub(r'[\\/:*?"<>|\s]+', "_", title).strip("_")
 
 
-def _markdown_output_title(node: SectionNode) -> str:
-    title = node["title"]
+def _markdown_output_title(node: SectionNode, section_path: str | None = None) -> str:
+    section_path = (
+        section_path
+        or node.get("_section_path")
+        or node.get("path")
+        or node["title"]
+    )
+    title = _public_section_title(node, str(section_path))
     if node.get("implicit"):
         return f"{title}（节尾习题）"
     return title
 
 
-def write_section_markdown(node: SectionNode, output_dir: str) -> str | None:
+def write_section_markdown(
+    node: SectionNode, output_dir: str, *, section_path: str | None = None
+) -> str | None:
     """立即写出单个章节 Markdown，返回路径；无可输出内容时返回 None。"""
     if node.get("is_answers") and node.get("answer_sections"):
         start_page = node["exercise_page_range"][0]
-        fname = f"{start_page}_{_sanitize_filename(_markdown_output_title(node))}.md"
+        fname = f"{start_page}_{_sanitize_filename(_markdown_output_title(node, section_path))}.md"
         path = os.path.join(output_dir, fname)
         content = node.get("content", {}).get("tool_review") or render_answer_markdown(node)
     elif node.get("has_exercise") and _numbered_exercises(node):
         start_page = node["exercise_page_range"][0]
-        fname = f"{start_page}_{_sanitize_filename(_markdown_output_title(node))}.md"
+        fname = f"{start_page}_{_sanitize_filename(_markdown_output_title(node, section_path))}.md"
         path = os.path.join(output_dir, fname)
         content = node.get("content", {}).get("tool_review") or render_exercise_markdown(node)
     else:
@@ -205,9 +213,9 @@ def write_section_json(
     if public is None:
         return None
     start_page = node["exercise_page_range"][0]
-    # 节尾搜索标记只允许出现在 Markdown 文件名；公共 JSON 的文件名和
-    # object.title 都使用原始 section 标题。
-    fname = f"{start_page}_{_sanitize_filename(node['title'])}.json"
+    # 节尾搜索标记只允许出现在 Markdown 文件名；JSON 文件名使用公共
+    # section title，避免泛化的“习题”在不同章节下重名。
+    fname = f"{start_page}_{_sanitize_filename(public['title'])}.json"
     output_path = os.path.join(output_dir, fname)
     os.makedirs(output_dir, exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
@@ -236,7 +244,7 @@ def write_outputs(
             if parent_path
             else node["title"]
         )
-        write_section_markdown(node, output_dir)
+        write_section_markdown(node, output_dir, section_path=node_path)
         write_section_json(
             node,
             output_dir,

@@ -10,6 +10,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from .parse_md_exercises import is_generic_section
+
 
 def _is_numbered_exercise(item: dict[str, Any]) -> bool:
     """只保留真正的习题编号，排除“例1/例题”等教材示例。"""
@@ -75,6 +77,22 @@ def _review_content(node: dict[str, Any], original: str) -> dict[str, Any]:
     }
 
 
+def _public_section_title(node: dict[str, Any], section_path: str) -> str:
+    """生成公共 section 标题，不把目录层级斜杠带进 title。
+
+    某些教材每章下的习题节点都只标为“习题”。公共 JSON 需要一个能区分
+    章节的标题，因此在普通（非隐式）节点且路径确实以该泛化标题结尾时，
+    用上级路径标题和“习题”以空格拼接。``path`` 本身仍保留目录树的 ``/``。
+    """
+    title = str(node.get("title") or "")
+    if node.get("implicit") or not is_generic_section(title):
+        return title
+    parts = [part.strip() for part in str(section_path or "").split("/") if part.strip()]
+    if len(parts) >= 2 and is_generic_section(parts[-1]):
+        return f"{parts[-2]} {title}".strip()
+    return title
+
+
 def public_section_from_node(
     node: dict[str, Any],
     *,
@@ -117,10 +135,11 @@ def public_section_from_node(
     review_warnings = node.get("review_warnings")
     if not isinstance(review_warnings, list):
         review_warnings = []
+    section_path = path or node.get("path") or node.get("_section_path") or node.get("title") or ""
     return {
         "document_name": document_name or node.get("document_name") or "",
-        "title": node.get("title") or "",
-        "path": path or node.get("path") or node.get("_section_path") or node.get("title") or "",
+        "title": _public_section_title(node, section_path),
+        "path": section_path,
         "has_exercise": True,
         "exercise_page_range": list(node.get("exercise_page_range") or []),
         "implicit": bool(node.get("implicit", False)),
