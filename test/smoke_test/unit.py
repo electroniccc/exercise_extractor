@@ -1022,6 +1022,18 @@ def test_cli_engine_device_args() -> None:
             )
         ),
     )
+    from exercise_extractor.ocr import _toc_ocr_kwargs
+
+    synced = type("Args", (), {
+        "ocr_device": "gpu",
+        "ocr_engine": "paddle",
+        "toc_device": "cpu",
+        "toc_engine": "onnxruntime",
+    })()
+    check(
+        "toc_forge OCR 参数跟随 exercise_extractor",
+        _toc_ocr_kwargs(synced) == {"device": "gpu", "engine": "paddle"},
+    )
 
 
 def test_match_section_answers() -> None:

@@ -106,13 +106,13 @@ def parse_args() -> argparse.Namespace:
         "--toc-device",
         type=str,
         default=None,
-        help="toc_forge 目录识别设备（如 gpu/cpu，默认交给 toc_forge）",
+        help="toc_forge 目录识别设备（兼容参数；优先使用 --ocr-device）",
     )
     parser.add_argument(
         "--toc-engine",
         type=str,
         default=None,
-        help="toc_forge 目录识别引擎（如 onnxruntime 使用 inference.onnx）",
+        help="toc_forge 目录识别引擎（兼容参数；优先使用 --ocr-engine）",
     )
     parser.add_argument(
         "--oss-endpoint",

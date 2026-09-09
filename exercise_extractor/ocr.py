@@ -27,6 +27,24 @@ ALIYUN_BASE_URL = (
 )
 
 
+def _toc_ocr_kwargs(args: argparse.Namespace) -> dict[str, str]:
+    """返回 toc_forge 的 OCR 参数，并让 --ocr-* 与其保持一致。"""
+    ocr_device = getattr(args, "ocr_device", None)
+    toc_device = getattr(args, "toc_device", None)
+    if ocr_device and toc_device and ocr_device != toc_device:
+        logger.warning("ocr_device=%s 覆盖不一致的 toc_device=%s", ocr_device, toc_device)
+    ocr_engine = getattr(args, "ocr_engine", None)
+    toc_engine = getattr(args, "toc_engine", None)
+    if ocr_engine and toc_engine and ocr_engine != toc_engine:
+        logger.warning("ocr_engine=%s 覆盖不一致的 toc_engine=%s", ocr_engine, toc_engine)
+    result: dict[str, str] = {}
+    if ocr_device or toc_device:
+        result["device"] = ocr_device or toc_device
+    if ocr_engine or toc_engine:
+        result["engine"] = ocr_engine or toc_engine
+    return result
+
+
 def build_sections(args: argparse.Namespace) -> list[SectionNode]:
     """跑 toc_forge 目录识别，返回习题区域小节树。
 
@@ -42,11 +60,8 @@ def build_sections(args: argparse.Namespace) -> list[SectionNode]:
         doc.close()
         title = os.path.splitext(os.path.basename(args.input))[0]
         return exampaper.build_exampaper_sections(title, doc_page_count)
-    toc_engine_kwargs = {}
-    if getattr(args, "toc_device", None):
-        toc_engine_kwargs["device"] = args.toc_device
-    if getattr(args, "toc_engine", None):
-        toc_engine_kwargs["engine"] = args.toc_engine
+    # toc_forge 的目录页 OCR 与习题页 OCR 应使用同一套 Paddle 推理设备/引擎。
+    toc_engine_kwargs = _toc_ocr_kwargs(args)
     # 目录识别改用阿里云 vLLM API（视觉模型直接读目录页图片）；
     # API key 取环境变量 ALIYUN_API_KEY，模型名要与部署的模型一致
     if not os.environ.get("ALIYUN_API_KEY"):
