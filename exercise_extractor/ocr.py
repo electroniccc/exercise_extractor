@@ -20,29 +20,31 @@ from .utils import fix_markdown_block_latex, image_from_page
 
 logger = logging.getLogger(__name__)
 
-VLLM_NAME = "qwen3.7-flash"
-# 阿里云 openai 兼容地址
-ALIYUN_BASE_URL = (
-    "https://ws-alorrjihwnhn7hw7.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
-)
+DEFAULT_TOC_VLLM_NAME = "qwen3.7-flash"
 
 
 def _toc_ocr_kwargs(args: argparse.Namespace) -> dict[str, str]:
     """返回 toc_forge 的 OCR 参数，并让 --ocr-* 与其保持一致。"""
     ocr_device = getattr(args, "ocr_device", None)
-    toc_device = getattr(args, "toc_device", None)
-    if ocr_device and toc_device and ocr_device != toc_device:
-        logger.warning("ocr_device=%s 覆盖不一致的 toc_device=%s", ocr_device, toc_device)
     ocr_engine = getattr(args, "ocr_engine", None)
-    toc_engine = getattr(args, "toc_engine", None)
-    if ocr_engine and toc_engine and ocr_engine != toc_engine:
-        logger.warning("ocr_engine=%s 覆盖不一致的 toc_engine=%s", ocr_engine, toc_engine)
     result: dict[str, str] = {}
-    if ocr_device or toc_device:
-        result["device"] = ocr_device or toc_device
-    if ocr_engine or toc_engine:
-        result["engine"] = ocr_engine or toc_engine
+    if ocr_device:
+        result["device"] = ocr_device
+    if ocr_engine:
+        result["engine"] = ocr_engine
     return result
+
+
+def _toc_llm_config(args: argparse.Namespace) -> tuple[str, str | None, str | None]:
+    """读取目录识别 vLLM 配置；密钥和地址默认来自环境变量。"""
+    model = getattr(args, "toc_vllm_name", None) or DEFAULT_TOC_VLLM_NAME
+    api_base_url = getattr(args, "toc_api_base_url", None) or os.environ.get(
+        "TOC_FORGE_API_BASE_URL"
+    ) or os.environ.get("ALIYUN_BASE_URL") or os.environ.get("OPENAI_BASE_URL")
+    api_key = getattr(args, "toc_api_key", None) or os.environ.get(
+        "TOC_FORGE_API_KEY"
+    ) or os.environ.get("ALIYUN_API_KEY") or os.environ.get("OPENAI_API_KEY")
+    return model, api_base_url, api_key
 
 
 def build_sections(args: argparse.Namespace) -> list[SectionNode]:
@@ -88,19 +90,21 @@ def build_sections(args: argparse.Namespace) -> list[SectionNode]:
         return exampaper.build_exampaper_sections(title, doc_page_count)
     # toc_forge 的目录页 OCR 与习题页 OCR 应使用同一套 Paddle 推理设备/引擎。
     toc_engine_kwargs = _toc_ocr_kwargs(args)
-    # 目录识别改用阿里云 vLLM API（视觉模型直接读目录页图片）；
-    # API key 取环境变量 ALIYUN_API_KEY，模型名要与部署的模型一致
-    if not os.environ.get("ALIYUN_API_KEY"):
-        logger.warning("环境变量 ALIYUN_API_KEY 未设置，调用阿里云 vLLM API 会鉴权失败")
+    # 目录识别改用 OpenAI-compatible vLLM API（视觉模型直接读目录页图片）。
+    toc_vllm_name, toc_api_base_url, toc_api_key = _toc_llm_config(args)
+    if not toc_api_key:
+        logger.warning("未配置 toc_forge API key，目录识别 API 调用可能鉴权失败")
+    if not toc_api_base_url:
+        logger.warning("未配置 toc_forge API base URL，目录识别 API 调用可能失败")
     _, _, toc_tree = toc_forge.bookmark_pdf(
         args.input,
         "./temp",
         model_dir=args.model_dir,
         cache_dir=os.path.join(args.ocr_cache, "toc_forge"),
         toc_strategy="vllm",
-        api_base_url=ALIYUN_BASE_URL,
-        api_key=os.environ.get("ALIYUN_API_KEY"),
-        vllm_name=VLLM_NAME,
+        api_base_url=toc_api_base_url,
+        api_key=toc_api_key,
+        vllm_name=toc_vllm_name,
         **toc_engine_kwargs,
     )
     # 文档总页数：习题答案节点没有 boundary 时用它收尾

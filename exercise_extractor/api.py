@@ -148,10 +148,11 @@ def extract_exercise(
     vl_rec_server_url: str = DEFAULT_VL_SERVER_URL,
     vl_rec_max_concurrency: int = DEFAULT_VL_REC_MAX_CONCURRENCY,
     vl_rec_api_model_name: str = DEFAULT_VL_REC_API_MODEL_NAME,
+    toc_vllm_name: str = "qwen3.7-flash",
+    toc_api_base_url: Optional[str] = None,
+    toc_api_key: Optional[str] = None,
     ocr_device: Optional[str] = None,
     ocr_engine: Optional[str] = None,
-    toc_device: Optional[str] = None,
-    toc_engine: Optional[str] = None,
     oss_endpoint: Optional[str] = None,
     oss_access_key: Optional[str] = None,
     oss_secret_key: Optional[str] = None,
@@ -171,12 +172,14 @@ def extract_exercise(
     EXERCISE_EXTRACTOR_MODEL_DIR（toc_forge 需要显式模型目录）。
     vl_rec_*：PaddleOCR-VL 引擎初始化参数（backend / server_url /
     并发数 / 引擎模型名）。
+    toc_vllm_name / toc_api_base_url / toc_api_key：目录识别 vLLM 配置；模型名
+    默认使用 ``qwen3.7-flash``，地址和密钥未显式传入时分别读取
+    ``TOC_FORGE_API_BASE_URL``/``ALIYUN_BASE_URL``/``OPENAI_BASE_URL`` 和
+    ``TOC_FORGE_API_KEY``/``ALIYUN_API_KEY``/``OPENAI_API_KEY``。
     ocr_device / ocr_engine：PaddleOCR-VL 推理设备与引擎
     （如 device="gpu"/"cpu"，engine="paddle"/"onnxruntime"），
     None 时交给 paddlex 默认。
-    toc_device / toc_engine：toc_forge 目录识别的设备与引擎
-    （如 engine="onnxruntime" 使用模型目录下的 inference.onnx），
-    None 时交给 toc_forge 默认。
+    ocr_device / ocr_engine 同时用于 PaddleOCR-VL 和 toc_forge 的 OCR。
     oss_*：OSS/MinIO 配置。四个必填项（endpoint/access_key/secret_key/
     bucket）齐全时启用图片上传：把 markdown 里的本地图片传到 OSS，
     src 替换为公开 URL（优先 oss_public_base_url，否则
@@ -213,10 +216,11 @@ def extract_exercise(
         vl_rec_server_url=vl_rec_server_url,
         vl_rec_max_concurrency=vl_rec_max_concurrency,
         vl_rec_api_model_name=vl_rec_api_model_name,
+        toc_vllm_name=toc_vllm_name,
+        toc_api_base_url=toc_api_base_url,
+        toc_api_key=toc_api_key,
         ocr_device=ocr_device,
         ocr_engine=ocr_engine,
-        toc_device=toc_device,
-        toc_engine=toc_engine,
         oss_endpoint=oss_endpoint,
         oss_access_key=oss_access_key,
         oss_secret_key=oss_secret_key,

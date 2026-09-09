@@ -95,6 +95,24 @@ def parse_args() -> argparse.Namespace:
         help="VL OCR 引擎模型名 (default: PaddleOCR-VL-1.6-0.9B)",
     )
     parser.add_argument(
+        "--toc-vllm-name",
+        type=str,
+        default="qwen3.7-flash",
+        help="toc_forge 目录识别模型名（默认 qwen3.7-flash）",
+    )
+    parser.add_argument(
+        "--toc-api-base-url",
+        type=str,
+        default=None,
+        help="toc_forge API 地址（默认读取 TOC_FORGE_API_BASE_URL 等环境变量）",
+    )
+    parser.add_argument(
+        "--toc-api-key",
+        type=str,
+        default=None,
+        help="toc_forge API key（默认读取 TOC_FORGE_API_KEY/ALIYUN_API_KEY）",
+    )
+    parser.add_argument(
         "--ocr-device",
         type=str,
         default=None,
@@ -105,18 +123,6 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help="PaddleOCR-VL 推理引擎（如 paddle/onnxruntime，默认交给 paddlex）",
-    )
-    parser.add_argument(
-        "--toc-device",
-        type=str,
-        default=None,
-        help="toc_forge 目录识别设备（兼容参数；优先使用 --ocr-device）",
-    )
-    parser.add_argument(
-        "--toc-engine",
-        type=str,
-        default=None,
-        help="toc_forge 目录识别引擎（兼容参数；优先使用 --ocr-engine）",
     )
     parser.add_argument(
         "--oss-endpoint",

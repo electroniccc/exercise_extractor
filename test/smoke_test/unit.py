@@ -530,21 +530,24 @@ def test_api_contract() -> None:
 
     params = inspect.signature(extract_exercise).parameters
     check(
-        "API 暴露 ocr/toc engine/device 参数",
+        "API 暴露统一 OCR engine/device 参数",
         all(
             k in params
-            for k in (
-                "ocr_device",
-                "ocr_engine",
-                "toc_device",
-                "toc_engine",
-            )
+            for k in ("ocr_device", "ocr_engine")
         ),
+    )
+    check(
+        "API 不再暴露独立 toc engine/device 参数",
+        "toc_device" not in params and "toc_engine" not in params,
     )
     check("API 不再要求 source_type", "source_type" not in params)
     check(
         "API 不保留旧版 vl 参数",
         "vl_server_url" not in params and "vl_model" not in params,
+    )
+    check(
+        "API 暴露 toc_forge vLLM 配置",
+        all(k in params for k in ("toc_vllm_name", "toc_api_base_url", "toc_api_key")),
     )
     check(
         "API 支持图片输入",
@@ -1064,7 +1067,7 @@ def test_cli_review_skips_answer_nodes() -> None:
 
 
 def test_cli_engine_device_args() -> None:
-    """CLI 能解析 ocr/toc 的 engine/device 参数。"""
+    """CLI 能解析统一 OCR engine/device 参数。"""
     from unittest import mock
 
     from exercise_extractor.main import parse_args
@@ -1079,29 +1082,21 @@ def test_cli_engine_device_args() -> None:
             "gpu",
             "--ocr-engine",
             "paddle",
-            "--toc-device",
-            "cpu",
-            "--toc-engine",
-            "onnxruntime",
             "--review-concurrency",
             "5",
         ],
     ):
         args = parse_args()
     check(
-        "CLI 解析 ocr/toc engine/device 与 review 并发数",
+        "CLI 解析统一 OCR engine/device 与 review 并发数",
         args.ocr_device == "gpu"
         and args.ocr_engine == "paddle"
-        and args.toc_device == "cpu"
-        and args.toc_engine == "onnxruntime"
         and args.review_concurrency == 5
         and not args.review_with_tools,
         str(
             (
                 args.ocr_device,
                 args.ocr_engine,
-                args.toc_device,
-                args.toc_engine,
             )
         ),
     )
@@ -1110,12 +1105,22 @@ def test_cli_engine_device_args() -> None:
     synced = type("Args", (), {
         "ocr_device": "gpu",
         "ocr_engine": "paddle",
-        "toc_device": "cpu",
-        "toc_engine": "onnxruntime",
     })()
     check(
         "toc_forge OCR 参数跟随 exercise_extractor",
         _toc_ocr_kwargs(synced) == {"device": "gpu", "engine": "paddle"},
+    )
+    from exercise_extractor.ocr import _toc_llm_config
+
+    toc_args = type("Args", (), {
+        "toc_vllm_name": "test-model",
+        "toc_api_base_url": "https://example.test/v1",
+        "toc_api_key": "test-key",
+    })()
+    check(
+        "toc_forge vLLM 配置可覆盖",
+        _toc_llm_config(toc_args)
+        == ("test-model", "https://example.test/v1", "test-key"),
     )
 
 
