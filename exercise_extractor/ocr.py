@@ -96,7 +96,7 @@ def build_sections(args: argparse.Namespace) -> list[SectionNode]:
         logger.warning("未配置 toc_forge API key，目录识别 API 调用可能鉴权失败")
     if not toc_api_base_url:
         logger.warning("未配置 toc_forge API base URL，目录识别 API 调用可能失败")
-    _, _, toc_tree = toc_forge.bookmark_pdf(
+    bookmark_result = toc_forge.bookmark_pdf(
         args.input,
         "./temp",
         model_dir=args.model_dir,
@@ -107,6 +107,8 @@ def build_sections(args: argparse.Namespace) -> list[SectionNode]:
         vllm_name=toc_vllm_name,
         **toc_engine_kwargs,
     )
+    # toc_forge 0.3+ 返回 BookmarkResult；这里直接取结构化目录树。
+    toc_tree = bookmark_result.toc_tree
     # 文档总页数：习题答案节点没有 boundary 时用它收尾
     doc = pymupdf.open(args.input)
     doc_page_count = doc.page_count
