@@ -48,8 +48,8 @@ def run_pipeline(
 ) -> list:
     """执行完整提取链，返回内部习题节点树（仅供 CLI/适配层使用）。
 
-    args 需要字段：input / output / ocr_cache / model_dir / vl_server_url /
-    vl_model / doc_type。output 为 None 时只做提取、不落盘输出文件。
+    args 需要字段：input / source_type / output / ocr_cache / model_dir /
+    vl_server_url / vl_model / doc_type。output 为 None 时只做提取、不落盘输出文件。
     """
     if args.output:
         ensure_output_dir_empty(args.output)
@@ -58,7 +58,7 @@ def run_pipeline(
     file_hash = compute_file_hash(args.input)
     logger.info(
         "filename: %s, hash: %s, output: %s",
-        os.path.basename(args.input),
+        getattr(args, "document_name", os.path.splitext(os.path.basename(args.input))[0]),
         file_hash,
         args.output,
     )
@@ -106,7 +106,9 @@ def run_pipeline(
             exercise_sections,
             args.output,
             markdown_path,
-            document_name=os.path.splitext(os.path.basename(args.input))[0],
+            document_name=getattr(
+                args, "document_name", os.path.splitext(os.path.basename(args.input))[0]
+            ),
         )
         if print_summary_enabled:
             print_summary(report)
@@ -181,7 +183,9 @@ def iter_sections(
     collect_titles(exercise_sections)
 
     # 3) 按树序逐节 OCR → 拼页 → 切分 → 回填答案 → yield
-    document_name = os.path.splitext(os.path.basename(args.input))[0]
+    document_name = getattr(
+        args, "document_name", os.path.splitext(os.path.basename(args.input))[0]
+    )
 
     def walk(nodes: list, path: str):
         for node in nodes:

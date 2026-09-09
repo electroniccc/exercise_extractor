@@ -1,15 +1,18 @@
-"""对外公共 API：输入文件路径，流式返回扁平的习题 section JSON。
+"""对外公共 API：输入 PDF 或图片路径，流式返回扁平的习题 section JSON。
 
 每次 yield 一个不含 ``children`` 的公共 section object。OCR 需要本地
 vllm-server（默认 http://localhost:8080/v1；llama.cpp+GGUF 已弃用）。
-当前支持 PDF，
-后续计划支持 image / markdown 等输入。
+当前支持 PDF 和单张 image 输入。
 """
 
 import os
+import hashlib
+import tempfile
 from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Optional
+
+import pymupdf
 
 from .pipeline import iter_sections
 from .parse_md_exercises import split_exercises
@@ -23,8 +26,64 @@ DEFAULT_VL_REC_BACKEND = "vllm-server"
 DEFAULT_VL_REC_MAX_CONCURRENCY = 4
 DEFAULT_VL_REC_API_MODEL_NAME = "PaddleOCR-VL-1.6-0.9B"
 
-# 当前支持的输入类型；后续扩展 image / markdown
-SUPPORTED_SOURCE_TYPES = ("pdf",)
+# 当前支持的输入类型；后续可扩展 markdown 等输入
+SUPPORTED_SOURCE_TYPES = ("pdf", "image")
+_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
+
+
+def _image_group_hash(paths: list[str]) -> str:
+    digest = hashlib.sha256()
+    for path in paths:
+        size = os.path.getsize(path)
+        digest.update(size.to_bytes(8, "big"))
+        with open(path, "rb") as stream:
+            for chunk in iter(lambda: stream.read(65536), b""):
+                digest.update(chunk)
+    return digest.hexdigest()[:16]
+
+
+def _prepare_source(
+    source: str | list[str], cache_dir: str = ".ocr_cache"
+) -> tuple[str, str, str]:
+    """校验输入并把图片序列整理成可复用的缓存 PDF。"""
+    if isinstance(source, str):
+        paths = [path.strip() for path in source.split(",")] if "," in source else [source]
+    else:
+        paths = list(source)
+    if not paths or not all(isinstance(path, str) for path in paths):
+        raise TypeError("source 必须是 PDF/图片路径字符串，或图片路径列表")
+    for path in paths:
+        if not os.path.isfile(path):
+            raise FileNotFoundError(2, "No such file or directory", path)
+    if len(paths) == 1 and os.path.splitext(paths[0])[1].lower() == ".pdf":
+        return paths[0], "pdf", ""
+    if not all(os.path.splitext(path)[1].lower() in _IMAGE_SUFFIXES for path in paths):
+        raise ValueError("source 只能是 PDF，或全部为 png/jpg/jpeg/webp/bmp/tif 图片")
+    group_hash = _image_group_hash(paths)
+    image_pdf_dir = os.path.join(cache_dir, "exercise_extractor", "image_pdf")
+    os.makedirs(image_pdf_dir, exist_ok=True)
+    cached_pdf = os.path.join(image_pdf_dir, f"{group_hash}.pdf")
+    if os.path.isfile(cached_pdf) and os.path.getsize(cached_pdf) > 0:
+        return cached_pdf, "image", ""
+    temp = tempfile.NamedTemporaryFile(
+        prefix=f".{group_hash}_", suffix=".pdf", dir=image_pdf_dir, delete=False
+    )
+    temp_path = temp.name
+    temp.close()
+    os.unlink(temp_path)
+    output = pymupdf.open()
+    try:
+        for path in paths:
+            pixmap = pymupdf.Pixmap(path)
+            page = output.new_page(width=pixmap.width, height=pixmap.height)
+            page.insert_image(page.rect, filename=path)
+        output.save(temp_path)
+        os.replace(temp_path, cached_pdf)
+    finally:
+        output.close()
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
+    return cached_pdf, "image", ""
 
 
 def reparse_exercises(section: dict, markdown: str | None = None) -> dict:
@@ -80,8 +139,7 @@ def _resolve_model_dir(model_dir: Optional[str]) -> Optional[str]:
 
 
 def extract_exercise(
-    source: str,
-    source_type: str = "pdf",
+    source: str | list[str],
     doc_type: str = "textbook",
     output_dir: Optional[str] = None,
     ocr_cache: str = ".ocr_cache",
@@ -102,20 +160,17 @@ def extract_exercise(
     oss_prefix: str = "",
     oss_use_ssl: bool = False,
     oss_public_base_url: Optional[str] = None,
-    vl_server_url: Optional[str] = None,
-    vl_model: Optional[str] = None,
     write_outputs: bool = False,
 ) -> Iterator[dict]:
-    """提取 PDF 中的习题，返回按节流式产出的公共 section 迭代器。
+    """提取 PDF 或一张/多张图片中的习题，返回公共 section 迭代器。
 
-    source：输入文件路径（当前仅支持 PDF）。
-    source_type：输入类型，当前仅 "pdf"；后续支持 "image"/"markdown"。
+    source：PDF 路径，或一张/多张图片路径。输入类型按扩展名自动识别；图片
+    按连续页面处理且不经过目录识别，三种 doc_type 均复用对应的习题切分逻辑。
     doc_type：textbook / exercise_book / exampaper。
     model_dir：模型目录；为 None 时读环境变量
     EXERCISE_EXTRACTOR_MODEL_DIR（toc_forge 需要显式模型目录）。
     vl_rec_*：PaddleOCR-VL 引擎初始化参数（backend / server_url /
-    并发数 / 引擎模型名）；vl_server_url、vl_model 为旧参数名的兼容别名，
-    传入时覆盖对应的 vl_rec_* 配置。
+    并发数 / 引擎模型名）。
     ocr_device / ocr_engine：PaddleOCR-VL 推理设备与引擎
     （如 device="gpu"/"cpu"，engine="paddle"/"onnxruntime"），
     None 时交给 paddlex 默认。
@@ -132,15 +187,13 @@ def extract_exercise(
     返回迭代器：每完成一个有编号习题的 section 就 yield 一个不含
     ``children`` 的公共 JSON object。section 的 ``path`` 使用 ``/`` 记录
     其在目录树中的完整路径；答案节点和无编号习题节点不会 yield。
-    参数校验（文件存在、source_type、model_dir）在调用时立即执行。
+    参数校验（文件存在、输入类型、model_dir）在调用时立即执行。
     """
-    if source_type not in SUPPORTED_SOURCE_TYPES:
-        raise NotImplementedError(
-            f"source_type={source_type!r} 暂不支持，当前仅支持 "
-            f"{'/'.join(SUPPORTED_SOURCE_TYPES)}"
-        )
-    if not os.path.isfile(source):
-        raise FileNotFoundError(source)
+    source_paths = (
+        [path.strip() for path in source.split(",")]
+        if isinstance(source, str) and "," in source
+        else ([source] if isinstance(source, str) else source)
+    )
     if write_outputs and not output_dir:
         raise ValueError("write_outputs=True 时需要提供 output_dir")
     model_dir = _resolve_model_dir(model_dir)
@@ -148,13 +201,11 @@ def extract_exercise(
         raise ValueError(
             "需要提供 model_dir，或设置环境变量 EXERCISE_EXTRACTOR_MODEL_DIR"
         )
-    if vl_server_url is not None:
-        vl_rec_server_url = vl_server_url
-    # vl_model 只控制输出后处理（含 "PaddleOCR" 时启用块公式修复），
-    # 没显式给就用引擎模型名兜底
-    vl_model = vl_model or vl_rec_api_model_name
+    prepared_source, source_type, cleanup_path = _prepare_source(source, ocr_cache)
     args = SimpleNamespace(
-        input=source,
+        input=prepared_source,
+        source_type=source_type,
+        document_name=os.path.splitext(os.path.basename(source_paths[0]))[0],
         output=output_dir,
         ocr_cache=ocr_cache,
         model_dir=model_dir,
@@ -174,11 +225,11 @@ def extract_exercise(
         oss_prefix=oss_prefix,
         oss_use_ssl=oss_use_ssl,
         oss_public_base_url=oss_public_base_url,
-        vl_model=vl_model,
+        vl_model=vl_rec_api_model_name,
         doc_type=doc_type,
     )
     internal_sections = iter_sections(args, write_outputs_enabled=write_outputs)
-    document_name = os.path.splitext(os.path.basename(source))[0]
+    document_name = args.document_name
 
     def public_sections() -> Iterator[dict]:
         for node in internal_sections:
@@ -201,7 +252,25 @@ def extract_exercise(
             if public is not None:
                 yield public
 
-    return public_sections()
+    result = public_sections()
+    if not cleanup_path:
+        return result
+
+    def cleanup_after_iteration() -> Iterator[dict]:
+        try:
+            yield from result
+        finally:
+            try:
+                os.unlink(cleanup_path)
+            except FileNotFoundError:
+                pass
+
+    return cleanup_after_iteration()
+
+
+def extract_exercise_from_image(source: str | list[str], **kwargs) -> Iterator[dict]:
+    """从一张或多张图片提取习题；参数与 ``extract_exercise`` 相同。"""
+    return extract_exercise(source, **kwargs)
 
 
 # 兼容旧名（v0.1.0 早期接口），后续可移除

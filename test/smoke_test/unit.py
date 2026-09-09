@@ -457,6 +457,26 @@ def test_exampaper_output_sections() -> None:
         and [len(child["exercises"]) for child in node["children"]]
         == [1, 1, 1],
     )
+    bare_heading = {
+        "title": "南京大学 851 真题",
+        "has_exercise": True,
+        "exampaper": True,
+        "children": [],
+        "exercise_page_range": [1, 4],
+        "exercise_content": (
+            "## 南京大学\n\n（1）第一道题\n\n（2）第二道题\n\n"
+            "二、已知连续时间信号 f(t)。\n（1）求原信号。\n（2）求变换。\n\n"
+            "三、已知系统函数 H(s)，求系统响应。\n"
+        ),
+    }
+    exampaper.extract_exercises([bare_heading])
+    check(
+        "试卷无题型标题时识别中文序号题目",
+        [child["title"] for child in bare_heading["children"]]
+        == ["一、简答题", "二", "三"]
+        and [len(child["exercises"]) for child in bare_heading["children"]]
+        == [2, 1, 1],
+    )
 
 
 def test_tail_search_title_stays_out_of_json() -> None:
@@ -521,6 +541,69 @@ def test_api_contract() -> None:
             )
         ),
     )
+    check("API 不再要求 source_type", "source_type" not in params)
+    check(
+        "API 不保留旧版 vl 参数",
+        "vl_server_url" not in params and "vl_model" not in params,
+    )
+    check(
+        "API 支持图片输入",
+        "image" in __import__(
+            "exercise_extractor.api", fromlist=["SUPPORTED_SOURCE_TYPES"]
+        ).SUPPORTED_SOURCE_TYPES,
+    )
+    from exercise_extractor.api import _prepare_source
+    from exercise_extractor.ocr import build_sections
+    from PIL import Image
+
+    image_path = os.path.join(tempfile.gettempdir(), "exercise_extractor_test.png")
+    Image.new("RGB", (32, 32), "white").save(image_path)
+    try:
+        image_args = SimpleNamespace(
+            input=image_path,
+            source_type="image",
+            model_dir="/tmp/models",
+            ocr_cache="/tmp/ocr-cache",
+            doc_type="textbook",
+        )
+        image_nodes = build_sections(image_args)
+        check(
+            "图片输入建立单页习题节点",
+            len(image_nodes) == 1
+            and image_nodes[0]["exercise_page_range"] == [1, 2]
+            and image_nodes[0]["has_exercise"],
+        )
+    finally:
+        os.unlink(image_path)
+
+    image_path2 = os.path.join(tempfile.gettempdir(), "exercise_extractor_test_2.png")
+    Image.new("RGB", (32, 32), "white").save(image_path)
+    Image.new("RGB", (48, 48), "white").save(image_path2)
+    try:
+        with tempfile.TemporaryDirectory() as image_cache:
+            prepared, kind, cleanup = _prepare_source(
+                [image_path, image_path2], image_cache
+            )
+            import pymupdf
+
+            image_doc = pymupdf.open(prepared)
+            prepared_again, kind_again, cleanup_again = _prepare_source(
+                [image_path, image_path2], image_cache
+            )
+            check(
+                "多图片输入合成为连续页面并命中缓存",
+                kind == kind_again == "image"
+                and image_doc.page_count == 2
+                and prepared_again == prepared
+                and not cleanup
+                and not cleanup_again,
+            )
+            image_doc.close()
+    finally:
+        if os.path.exists(image_path):
+            os.unlink(image_path)
+        if os.path.exists(image_path2):
+            os.unlink(image_path2)
 
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
         f.write(b"%PDF-1.4 fake minimal")

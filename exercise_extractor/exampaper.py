@@ -77,6 +77,9 @@ _TYPE_WORDS = (
     "应用题",
     "综合题",
 )
+_QUESTION_HEADING_START_RE = re.compile(
+    r"^(?:已知|设|若|当|给定|对于|求|计算|证明|解|判断|讨论|电路|系统|函数|序列|信号)"
+)
 
 # 文末答案区的标题词（“解答题”不算，那是正文题型小节）
 _ANSWER_TAIL_WORDS = (
@@ -226,6 +229,10 @@ def _is_section_start_line(line: str) -> bool:
         if any(marker in rest for marker in ("【解】", "【答案】", "【解析】")):
             # 解析文档里“二、【解】”这类无题型词、无分值的节标题
             return True
+        # 有些试卷把每道大题直接写成“二、已知…/三、求…”；这不是题型
+        # 小节，但仍是可靠的顶层题目边界，不能把标题内容丢掉。
+        if _QUESTION_HEADING_START_RE.match(rest.strip()):
+            return True
         return False
     m = _DIGIT_SECTION_RE.match(text)
     if m:
@@ -309,6 +316,7 @@ def split_type_sections(
     index = 0
     seen_question_section = False
     current_page: int | None = None
+    leading_lines: list[str] = []
 
     def flush() -> None:
         nonlocal current
@@ -344,6 +352,22 @@ def split_type_sections(
             tail_lines = [line]
             continue
         if _is_section_start_line(line):
+            if current is None and leading_lines:
+                # 第一大题有时没有“一、…”标题，直接从（1）开始；遇到
+                # “二、已知…”时，把前置括号题作为隐含的第一题型小节。
+                if _PAREN_NUM_RE.search("\n".join(leading_lines)):
+                    index += 1
+                    current = {
+                        "index": index,
+                        "title": "一、简答题",
+                        "section_key": "一、简答题",
+                        "question_type": "short_answer",
+                        "start_page": None,
+                        "lines": leading_lines,
+                        "parenthesized_top_level": True,
+                    }
+                    flush()
+                leading_lines = []
             flush()
             index += 1
             title = _strip_heading(line)
@@ -374,10 +398,20 @@ def split_type_sections(
                 "start_page": current_page,
                 "lines": [],
             }
+            if (
+                not _chinese_type_word(title)
+                and "满分" not in title
+                and "本题共" not in title
+            ):
+                section_match = _CN_SECTION_RE.match(title)
+                if section_match:
+                    current["lines"].append(section_match.group(2).strip())
             seen_question_section = True
             continue
         if current is not None:
             current["lines"].append(line)
+        else:
+            leading_lines.append(line)
     flush()
 
     tail = "\n".join(tail_lines).strip() if tail_lines is not None else None
@@ -555,7 +589,12 @@ def _split_section_exercises(section: TypeSection) -> list[Exercise]:
     chunk = demote_exercise_headings(chunk)
     chunk = _HEADING_PREFIX_RE.sub("", chunk)
     chunk, figures = extract_figures(chunk)
-    if section["question_type"] in (
+    if section.get("parenthesized_top_level"):
+        chunk = _parenthesized_numbers_to_plain(chunk)
+        exercises = _split_short_answer_exercises(
+            chunk, section.get("start_page")
+        )
+    elif section["question_type"] in (
         "single_choice",
         "multiple_choice",
         "fill_in_blank",

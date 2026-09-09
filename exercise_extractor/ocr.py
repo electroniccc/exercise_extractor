@@ -54,6 +54,32 @@ def build_sections(args: argparse.Namespace) -> list[SectionNode]:
 
     exampaper 不走目录识别：整卷全量 OCR，直接返回整卷节点。
     """
+    source_type = getattr(args, "source_type", None)
+    if source_type is None:
+        suffix = os.path.splitext(args.input)[1].lower()
+        source_type = (
+            "image"
+            if suffix in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
+            else "pdf"
+        )
+    if source_type == "image":
+        # PyMuPDF 可以直接把常见图片打开为单页文档；图片没有目录可供
+        # toc_forge 识别，因此三种模式都从一个整页的合成节点开始，后续
+        # 仍复用同一套 OCR、题号切分和题型处理逻辑。
+        doc = pymupdf.open(args.input)
+        doc_page_count = doc.page_count
+        doc.close()
+        title = getattr(
+            args, "document_name", os.path.splitext(os.path.basename(args.input))[0]
+        )
+        if args.doc_type == "exampaper":
+            return exampaper.build_exampaper_sections(title, doc_page_count)
+        return [{
+            "title": title,
+            "has_exercise": True,
+            "exercise_page_range": [1, doc_page_count + 1],
+            "children": [],
+        }]
     if args.doc_type == "exampaper":
         doc = pymupdf.open(args.input)
         doc_page_count = doc.page_count

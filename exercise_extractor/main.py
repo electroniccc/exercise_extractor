@@ -11,7 +11,8 @@ import os
 from typing import Callable
 
 from .parse_md_exercises import split_exercises
-from .pipeline import run_pipeline
+from .api import _prepare_source
+from .pipeline import ensure_output_dir_empty, run_pipeline
 from .public_schema import public_section_from_node
 from .postprocess import (
     print_summary,
@@ -39,10 +40,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser = argparse.ArgumentParser(
         prog="exercise_extractor",
-        description="Exercise Extractor：从数学教材/习题集/试卷 PDF 中提取习题",
+        description="Exercise Extractor：从数学教材/习题集/试卷 PDF 或图片中提取习题",
     )
     parser.add_argument(
-        "--input", type=str, required=True, help="Path to input pdf file"
+        "--input",
+        type=str,
+        required=True,
+        help="Path to PDF/image；多张图片用逗号分隔",
     )
     parser.add_argument(
         "--output", default="output", type=str, help="Path to output directory"
@@ -203,7 +207,9 @@ def _review_sections(
     on_section_reviewed: Callable[[dict], None] | None = None,
 ) -> None:
     """并发审校各习题节点，保存三版 Markdown 并把最终版切回 exercises。"""
-    document_name = os.path.splitext(os.path.basename(args.input))[0]
+    document_name = getattr(
+        args, "document_name", os.path.splitext(os.path.basename(args.input))[0]
+    )
     use_tools = bool(getattr(args, "review_with_tools", False))
 
     review_jobs: list[tuple[dict, str, dict]] = []
@@ -316,9 +322,8 @@ def _review_sections(
     logger.info("并发审校完成：小节数=%d", len(review_jobs))
 
 
-def main() -> None:
-    """入口：解析参数并调用主流程。"""
-    args = parse_args()
+def _run_main(args: argparse.Namespace) -> None:
+    """使用已规范化的输入参数调用主流程。"""
     if args.review:
         # 审校涉及外部模型调用，默认打开 INFO 日志，让 CLI 能看到当前章节和轮次。
         # 若调用方已经配置 logging.basicConfig，则不会覆盖其配置。
@@ -351,7 +356,7 @@ def main() -> None:
             node,
             args.output,
             path=section_path,
-            document_name=os.path.splitext(os.path.basename(args.input))[0],
+            document_name=args.document_name,
         )
         if path:
             logger.info("审校小节已实时写出：%s", path)
@@ -361,10 +366,34 @@ def main() -> None:
         sections,
         args.output,
         markdown_path,
-        document_name=os.path.splitext(os.path.basename(args.input))[0],
+        document_name=args.document_name,
     )
     print_summary(report)
     print(f"输出目录: {os.path.abspath(args.output)}")
+
+
+def main() -> None:
+    args = parse_args()
+    if not args.hash and args.output:
+        # 保持输出目录保护在输入规范化/哈希计算之前生效，避免输入路径
+        # 错误时绕过对已有输出的保护。
+        ensure_output_dir_empty(args.output)
+    raw_sources = args.input
+    raw_source_paths = [path.strip() for path in raw_sources.split(",")]
+    prepared_source, source_type, cleanup_path = _prepare_source(
+        raw_sources, args.ocr_cache
+    )
+    args.input = prepared_source
+    args.source_type = source_type
+    args.document_name = os.path.splitext(os.path.basename(raw_source_paths[0]))[0]
+    try:
+        _run_main(args)
+    finally:
+        if cleanup_path:
+            try:
+                os.unlink(cleanup_path)
+            except FileNotFoundError:
+                pass
 
 
 if __name__ == "__main__":
