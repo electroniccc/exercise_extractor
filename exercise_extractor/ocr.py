@@ -215,7 +215,6 @@ def ocr_pages(
             "补 OCR 需要 --input"
         )
     logger.info("待 OCR 页面 %d 个: %s", len(pages_to_ocr), pages_to_ocr[:30])
-    print(f"待 OCR 页面 {len(pages_to_ocr)} 个，请稍候…")
     doc = pymupdf.open(args.input)
     try:
         imgs = [image_from_page(doc[page_num - 1]) for page_num in pages_to_ocr]
