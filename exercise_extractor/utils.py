@@ -23,12 +23,12 @@ def image_from_page(page: pymupdf.Page) -> np.ndarray:
 
 
 def compute_file_hash(filepath: str) -> str:
-    """SHA256 hex digest of a file, truncated to 16 chars."""
+    """SHA256 hex digest of a file, truncated to 32 hex characters."""
     sha = hashlib.sha256()
     with open(filepath, "rb") as f:
         for chunk in iter(lambda: f.read(65536), b""):
             sha.update(chunk)
-    return sha.hexdigest()[:16]
+    return sha.hexdigest()[:32]
 
 
 def fix_markdown_block_latex(markdown_file_path: str) -> None:

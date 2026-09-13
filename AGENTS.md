@@ -12,6 +12,7 @@
 | `exercise_extractor/__main__.py` | `python -m exercise_extractor` 调试入口（等价于仓库根 `python main.py`） |
 | `exercise_extractor/oss.py` | OSS/MinIO 图片上传：传 oss_* 参数（endpoint/access_key/secret_key/bucket）时，把 markdown 里的本地图片上传并把 src 替换为 OSS 公开 URL；缺配置完全不生效 |
 | `exercise_extractor/ocr.py` | 目录识别（build_sections，toc_forge + 阿里云 vLLM）与 OCR（ocr_pages，PaddleOCR-VL） |
+| `exercise_extractor/ocr_cache.py` | OCR 页面缓存：按 PDF hash 文件锁串行生产，临时目录校验后原子发布 page.md/page.json/imgs，READY 标记完整缓存 |
 | `exercise_extractor/extraction.py` | 提取链：目录树 → 习题区域（build_section_tree）、待 OCR 页码、拼页、规则切分（extract_exercises）；后续 LLM 检查/审核在此插入 |
 | `exercise_extractor/exercise_book.py` | 习题集专用流程：有目录按目录层级整节提取，无目录整本 OCR 后按小标题层级切块；题号切分/图注/表格与 textbook 共用 |
 | `exercise_extractor/exampaper.py` | 试卷专用流程：不走目录识别，整卷全量 OCR；按题型小节（选择题/填空题/简答题）切分，处理内嵌【答案】/【解】与文末答案区回填 |
@@ -34,7 +35,7 @@
 ## 主流程（main.py）
 
 1. **build_sections**（ocr.py）：`toc_forge.bookmark_pdf` 做目录识别（阿里云 vLLM 视觉 API，模型 `qwen3.7-flash`，API key 取环境变量 `ALIYUN_API_KEY`），得到目录树后经 `build_section_tree` 筛出习题章节，每节带 `exercise_page_range: [start, end)`。
-2. **ocr_pages**（ocr.py）：对未缓存的习题页转图像，交给 PaddleOCR-VL（vllm-server，默认 `http://localhost:8080/v1`）转 markdown，按 PDF 哈希分目录缓存（`page_N/page.md` 与 `page_N/page.json`）；已有 markdown 缓存自动跳过。
+2. **ocr_pages**（ocr.py）：对未缓存的习题页转图像，交给 PaddleOCR-VL（vllm-server，默认 `http://localhost:8080/v1`）转 markdown；按 PDF 哈希加文件锁，页面写入临时目录并在 `page.md`/`page.json` 完整后以 `READY` 标记原子发布，只有完整缓存才自动跳过。
 3. **combine_section_pages**（extraction.py）：把每节若干页 markdown 拼接，页间插入 `<!-- page: N -->` 标记供页码溯源。
 4. **extract_exercises**（extraction.py）：切分、按小节过滤、处理隐式节尾习题、题号重排为 1,2,3…（原题号保留在 `original_number`）。
 5. **answers.extract_and_match**：对 `is_answers` 节点拼页、按小标题切块、与习题节点匹配并校验题数，结果写入 `node["answer_sections"]`。
@@ -47,7 +48,7 @@ exampaper 分支不经过第 1/5 步：`build_sections` 先返回整卷根节点
 ### Exercise（parse_md_exercises.py）
 
 - `number` / `content` 必有；`separator`、`section`、`pages`、`original_number` 视情况存在。PDF 管线有页标记时，课本、习题集和试卷习题都会记录 `pages: [起始页, 结束页]`。
-- `bbox`：每个公共 Exercise JSON 固定带此字段，格式为 `[{"page": N, "bbox": [x1, y1, x2, y2]}]`；坐标来自对应页 PaddleOCR-VL `parsing_res_list` 的题目级解析块。跨页/多块题目可有多项；旧缓存缺少 `page.json` 或匹配置信度不足时为空数组。
+- `bbox`：每个公共 Exercise JSON 固定带此字段，格式为 `[{"page": N, "bbox": [x1, y1, x2, y2]}]`；坐标来自对应页 PaddleOCR-VL `parsing_res_list` 的题目级解析块。跨页/多块题目可有多项；匹配置信度不足时为空数组。
 - `number` 可能是 `"__preamble__"`（区间内无编号题时的整段内容占位）。
 - 支持区间题号（`"4-6"`）与多级题号（`"1.1.7"`）。
 - `answer` / `solution_steps`：每个习题都带这两个属性（无内容时为空字符串）。`answer` 来自题干后面的答案段（行首 `答：`/`答:`/`[答]`/`（答）` 起到题目结束）；`solution_steps` 来自行首 `解：`/`解:`/`[解]`/`（解）` 起的解答过程段（裸"解"必须有冒号，避免误判"解析/解决/解释"；带括号的写法无歧义）。两者都从 `content` 中切出单独存放，markdown 输出时以加粗的 `**解**：`/`**答**：` 单独成段写回。
@@ -84,11 +85,11 @@ exampaper 分支不经过第 1/5 步：`build_sections` 先返回整卷根节点
 - **试卷（exampaper）整卷提取**：不走目录识别，整卷 OCR（`exercise_page_range=[1, N+1)`）。`split_type_sections` 识别“一、选择题/二、填空题/三、解答题”题型小节，含“单选题/多选题/单项选择题/多项选择题/不定项选择题”等变体（兼容早年“二、（本题满分8分）”这类无题型词标题，以及“二、【解】”这类解析文档标题）。题型分类：多选/多项选择/不定项 → `multiple_choice`，普通选择 → `single_choice`，填空 → `fill_in_blank`，标题题型词是“证明题” → `proof`（“解答题…证明过程或演算步骤”里的“证明”不算），其余 → `short_answer`。答案区标题只在已出现至少一个题型小节后生效，且“题型词+答案/解析”紧邻才算答案区小节，避免“请将答案写在答题纸…”这类说明文字误触发；无标题答案区（春季卷“题号/答案”表格直接开头）通过 HTML 表格头识别。选择题/填空题用按行切分器（`_split_simple_numbered_exercises`，避免 “11. 3” 被多级题号正则吃掉；`）`/`)` 不当题号分隔符，避免把 (1)(2) 子问误拆；只有该节第一个编号行是括号编号的旧式试卷才整体转换 (1)(2)）。简答题保留 (1)(2) 子问、只把 >=10 的括号题号（如 (17)）转成普通题号；`N.（本题…` 无空格也认（点号后 `(?!\d)` 防 “17.2024年” 年份粘连）。题型小节内统一去掉 markdown 标题前缀（OCR 会把题号行渲染成 `### 18.`/`## (17)`，也会把跨页标题拆成残行如 `## 算步骤`）。解析文档的【答案】/【解】/【解析】/【详解】/【分析】/【点睛】拆到 answer/solution_steps（标记可能独占一行，也可能跟在答案后同处一行）；文末答案区（“参考答案”或“题号/答案”表格）按小节键+题号回填，没有小节标题时整段按题号全卷匹配。
 - **习题答案章节**：目录树里标题含「习题答案/参考答案/答案与提示/习题解答」的节点（`is_answers_title`）标记为 `is_answers`，页码范围 = `[起始页, 下一节点首页)`；没有 boundary 时默认持续到文档最后一页（`build_section_tree` 需要 `doc_page_count`）。`answers.py` 把答案页按小标题切块（markdown 标题行 / 行首 `§1.1` 标签）；**行首能解析出题号的标题行（如 "### 6 —7. 略"）不切块**，原样交给 `split_exercises` 的上下文规则判定还原，避免答案块被从中间切断。每块用 `split_exercises` 切答案并重编号；匹配策略：章级答案块（标题含"章"）优先显式习题节点、隐式节尾节点兜底，按章号+目录顺序一一对应，`count_match` 按**展开后的有效题数**（区间答案按覆盖题号逐个计数）与习题数比较。匹配后做**逐题填充**：答案块按题号（`original_number` 优先）对齐到每道习题的 `answer` 字段，**区间答案（"6-7"）展开填给 6 和 7**，已有内联答案的不覆盖，未命中的保持空字符串；答案节点保留 `answer_sections` 作为数据源，习题节点不挂整块答案。
 - **标题重置题号序列**：`split_exercises` 遇到标题行会重置 `prev_key`，否则"第二篇"这类独立编号段落（如答案章节从 1 重新开始）会被上一篇的题号吞掉。
-- **缓存体系**：OCR 结果按 PDF 哈希缓存（`.ocr_cache/exercise_extractor/{hash}/markdown/page_N/page.md` 与 `page.json`）；`--hash` 参数只打印哈希不跑流程。旧缓存只有 markdown 时继续可用，但习题 `bbox` 为空；后续新 OCR 页会同时保存两种格式。
+- **缓存体系**：PDF 使用 SHA-256 的前 32 位十六进制字符作为 hash，OCR 结果存放于 `.ocr_cache/exercise_extractor/{hash}/markdown/page_N/`。相同 hash 的并发请求通过 `{hash}/.ocr.lock` 串行生产，并在拿到锁后重新检查缺页；每页先把 `page.md`、`page.json` 和随页图片写到同文件系统临时目录，确认 Markdown 非空且 JSON 可解析后写入 `READY`，再原子发布整个 `page_N`。读取端只接受同时包含非空 `page.md`、`page.json` 和 `READY` 的页面；不兼容缺少 `READY` 的旧缓存，这类页面会重新 OCR。失败信息单独记录在 `markdown/.failures/page_N.txt`，不会创建可被误读的半成品页面目录。`--hash` 参数只打印 hash 不跑流程。
 - **输出目录保护**：程序不自动删除输出目录；发现 `--output` 目录非空即提示用户并退出（需自行清空或换新目录）；`--output` 指向已存在文件时同样报错退出，不留给 `os.makedirs` 抛 traceback。
 - **doc_type**：`textbook` 启用节尾搜索；`exercise_book` 走 `exercise_book.py` 专用流程（有目录：目录树叶子小节整体作为习题区域、不做小节归属过滤，起始页用 `truncate_from_page_heading` 兜底——目录标题可能比页内标题多前缀，如目录"习题 1-2 数列的极限" vs 页内"## 数列的极限"；无目录：整本 OCR 后按小标题层级切块再按题号提取）；`exampaper` 走 `exampaper.py` 专用流程（整卷 OCR + 题型小节切分，跳过 toc_forge 与通用答案章节匹配）。
 - **OCR 批大小**：PaddleOCR-VL genai 客户端默认 batch_size=8192（整批页面合成一批，`_doc_vlm_genai_collect_responses` 等整批完成才输出，导致结果到最后才一次性落盘）；`create_ocr_pipeline` 会把 `vl_rec_model.batch_sampler.batch_size` 强制改为 8，配合并发 8 实现按 8 个一批实时输出。
-- **批量 OCR 缺页兜底**：批量 `predict_iter` 正常返回但结果数少于请求页数时（静默截断，不抛异常），批量循环结束后按 `page.md` 是否存在逐个补齐缺失页；仍失败的单页走原有 FAILED 标记流程，不静默丢失。
+- **批量 OCR 缺页兜底**：批量 `predict_iter` 正常返回但结果数少于请求页数时（静默截断，不抛异常），批量循环结束后按页面是否带完整 `READY` 缓存逐个补齐缺失页；仍失败的单页记录到 `.failures`，不静默丢失。
 - **OCR 后端**：默认且推荐 `vllm-server`（`vl_rec_backend="vllm-server"`，引擎模型 `PaddleOCR-VL-1.6-0.9B`）。llama.cpp + GGUF（`PaddleOCR-VL-1.6-GGUF`）曾因 GGUF 参数/并行数与客户端不匹配出现偶发 FAILED 页，已弃用；`start_llamacpp.sh` 仅作历史参考。FAILED 重试与批量缺页兜底仍保留，防任何后端偶发失败。
 - **OSS/MinIO 图片上传**：`extract_exercise` 传 `oss_endpoint/oss_access_key/oss_secret_key/oss_bucket`（四个必填）即启用：提取完成前把 `<img src="本地路径">` 的图片上传到 OSS，src 替换为公开 URL（优先 `oss_public_base_url`，否则 `http(s)://endpoint/bucket/对象键`）；对象键 = `oss_prefix` + 相对 markdown 缓存根路径（`page_N/imgs/x.jpg`，避免跨页同名覆盖）。同一图片只上传一次（按本地路径缓存 URL）。流式与整树两条管线都生效；缺任一项必填配置则完全不碰网络。**桶必须公开读**（默认 URL 直接拼 endpoint/bucket），否则匿名 GET 403、图片无法加载——`start_minio.sh` 建桶后自动设 `anonymous download`；私有桶/真实 OSS 请用 `oss_public_base_url` 指向公开网关或 CDN。
 
@@ -177,7 +178,7 @@ CLI 只审校习题节点；答案章节不再单独调用 LLM，因为习题 Ma
 开启 `--review` 时 CLI 默认输出 INFO 日志，可看到每个小节的开始/完成、模型轮次、
 SymPy 工具调用和质量警告；日志不会输出题目正文或 API key。
 
-依赖：`pymupdf`、`toc_forge`、`paddleocr`（PaddleOCRVL）、`pylatexenc`、`cv2`、`numpy`、`Pillow`。目录识别需要 `ALIYUN_API_KEY` 环境变量；OCR 需要本地 vllm-server（默认 8080）。
+依赖：`pymupdf`、`toc_forge`、`paddleocr`（PaddleOCRVL）、`filelock`、`pylatexenc`、`cv2`、`numpy`、`Pillow`。目录识别需要 `ALIYUN_API_KEY` 环境变量；OCR 需要本地 vllm-server（默认 8080）。
 
 ## 测试
 

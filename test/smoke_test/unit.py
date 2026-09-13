@@ -240,13 +240,20 @@ def test_toc_and_boundaries() -> None:
 
     with tempfile.TemporaryDirectory() as tmp:
         os.makedirs(os.path.join(tmp, "page_1"))
-        open(os.path.join(tmp, "page_1", "page.md"), "w").close()
-        os.makedirs(os.path.join(tmp, "page_2"))
-        open(os.path.join(tmp, "page_2", "FAILED.txt"), "w").close()
+        with open(os.path.join(tmp, "page_1", "page.md"), "w") as stream:
+            stream.write("旧缓存")
         pages = collect_pages_to_ocr(
             [{"has_exercise": True, "exercise_page_range": [1, 3]}], tmp
         )
-        check("FAILED 页仍待重试", pages == [2], f"got {pages}")
+        check("缺少 READY 的旧缓存重新 OCR", pages == [1, 2], f"got {pages}")
+        with open(os.path.join(tmp, "page_1", "page.json"), "w") as stream:
+            json.dump({"parsing_res_list": []}, stream)
+        with open(os.path.join(tmp, "page_1", "READY"), "w") as stream:
+            stream.write("ready\n")
+        pages = collect_pages_to_ocr(
+            [{"has_exercise": True, "exercise_page_range": [1, 3]}], tmp
+        )
+        check("完整发布的页面命中缓存", pages == [2], f"got {pages}")
 
     check("答案标题识别", is_answers_title("第3章 习题答案"))
     check(
@@ -865,11 +872,14 @@ def test_exercise_bbox() -> None:
         check(
             "单页 OCR 同时缓存 Markdown 和原始 JSON",
             os.path.isfile(os.path.join(cache_dir, "page_2", "page.md"))
-            and os.path.isfile(os.path.join(cache_dir, "page_2", "page.json")),
+            and os.path.isfile(os.path.join(cache_dir, "page_2", "page.json"))
+            and os.path.isfile(os.path.join(cache_dir, "page_2", "READY")),
         )
 
         page_dir = os.path.join(cache_dir, "page_3")
         os.makedirs(page_dir)
+        with open(os.path.join(page_dir, "page.md"), "w", encoding="utf-8") as file:
+            file.write("1. 求函数 $f(x)=x^2$ 的导数。")
         with open(os.path.join(page_dir, "page.json"), "w", encoding="utf-8") as file:
             json.dump(
                 {
@@ -887,6 +897,8 @@ def test_exercise_bbox() -> None:
                 file,
                 ensure_ascii=False,
             )
+        with open(os.path.join(page_dir, "READY"), "w", encoding="utf-8") as file:
+            file.write("ready\n")
         node = {
             "title": "习题一",
             "has_exercise": True,
@@ -918,9 +930,97 @@ def test_exercise_bbox() -> None:
         }
         attach_exercise_bboxes([unmatched], cache_dir)
         check(
-            "旧缓存缺少 page.json 时 bbox 为空",
+            "缓存未完整发布时 bbox 为空",
             unmatched["exercises"][0]["bbox"] == [],
         )
+
+
+def test_ocr_cache_concurrency() -> None:
+    """相同 PDF 并发提取只生产一次，并且只发布完整页面缓存。"""
+    from concurrent.futures import ThreadPoolExecutor
+    import hashlib
+    import threading
+    import time
+    from unittest.mock import patch
+
+    import pymupdf
+
+    from exercise_extractor.ocr import _save_ocr_result, ocr_pages
+    from exercise_extractor.ocr_cache import page_cache_is_ready
+    from exercise_extractor.utils import compute_file_hash
+
+    with tempfile.TemporaryDirectory() as cache_dir:
+        pdf_path = os.path.join(cache_dir, "same.pdf")
+        document = pymupdf.open()
+        document.new_page()
+        document.save(pdf_path)
+        document.close()
+        with open(pdf_path, "rb") as stream:
+            expected_hash = hashlib.sha256(stream.read()).hexdigest()[:32]
+        check(
+            "PDF 缓存 hash 使用 32 位",
+            compute_file_hash(pdf_path) == expected_hash
+            and len(compute_file_hash(pdf_path)) == 32,
+        )
+
+        markdown_path = os.path.join(cache_dir, expected_hash, "markdown")
+        sections = [{"has_exercise": True, "exercise_page_range": [1, 2]}]
+        args = SimpleNamespace(input=pdf_path, vl_model="PaddleOCR-VL")
+
+        class Result:
+            def save_to_markdown(self, *, save_path: str, **_kwargs) -> None:
+                with open(save_path, "w", encoding="utf-8") as stream:
+                    stream.write("1. 并发题目")
+
+            def save_to_json(self, *, save_path: str, **_kwargs) -> None:
+                with open(save_path, "w", encoding="utf-8") as stream:
+                    json.dump({"parsing_res_list": []}, stream)
+
+        class Pipeline:
+            def __init__(self) -> None:
+                self.calls = 0
+                self.guard = threading.Lock()
+
+            def predict_iter(self, images):
+                with self.guard:
+                    self.calls += 1
+                time.sleep(0.1)
+                return iter(Result() for _ in images)
+
+        pipeline = Pipeline()
+        barrier = threading.Barrier(2)
+
+        def run() -> None:
+            barrier.wait()
+            ocr_pages(args, sections, markdown_path, pipeline)
+
+        with patch("exercise_extractor.ocr.image_from_page", return_value=object()):
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                futures = [executor.submit(run) for _ in range(2)]
+                for future in futures:
+                    future.result()
+        check(
+            "相同 PDF 并发 OCR 只生产一次",
+            pipeline.calls == 1 and page_cache_is_ready(markdown_path, 1),
+            f"calls={pipeline.calls}",
+        )
+
+        bad_result = Mock()
+
+        def write_markdown(*, save_path: str, **_kwargs) -> None:
+            with open(save_path, "w", encoding="utf-8") as stream:
+                stream.write("2. 半成品")
+
+        bad_result.save_to_markdown.side_effect = write_markdown
+        bad_result.save_to_json.side_effect = ValueError("invalid json")
+        try:
+            _save_ocr_result(bad_result, 2, markdown_path, "PaddleOCR-VL")
+            failed_atomically = False
+        except ValueError:
+            failed_atomically = not os.path.exists(
+                os.path.join(markdown_path, "page_2")
+            )
+        check("JSON 写入失败不发布 Markdown 半成品", failed_atomically)
 
 
 def test_llm_review_contract() -> None:
@@ -1406,8 +1506,8 @@ def test_cli() -> None:
         hashpdf = f.name
     r = run_cli(["--hash", "--input", hashpdf])
     check(
-        "--hash 输出 16 位 hex",
-        r.returncode == 0 and len(r.stdout.strip()) == 16,
+        "--hash 输出 32 位 hex",
+        r.returncode == 0 and len(r.stdout.strip()) == 32,
         r.stdout[-100:],
     )
     os.unlink(hashpdf)

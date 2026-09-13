@@ -18,6 +18,7 @@ import re
 from copy import deepcopy
 from typing import TypedDict
 
+from .ocr_cache import page_cache_is_ready
 from .parse_md_exercises import (
     Exercise,
     HEADING_RE,
@@ -561,7 +562,7 @@ def _combine_pages(page_range: list[int], markdown_path: str) -> str:
     content = ""
     for page_num in range(page_range[0], page_range[1]):
         path = os.path.join(markdown_path, f"page_{page_num}", "page.md")
-        if os.path.exists(path):
+        if page_cache_is_ready(markdown_path, page_num):
             with open(path, "r", encoding="utf-8", errors="ignore") as f:
                 content += f"\n{page_marker(page_num)}\n{f.read()}\n"
     return content

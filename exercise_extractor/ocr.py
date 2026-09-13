@@ -3,7 +3,7 @@
 - build_sections：跑 toc_forge 目录识别（阿里云 vLLM 视觉 API）得到目录树，
   经 build_section_tree 筛出习题区域；
 - create_ocr_pipeline / ocr_pages：用 PaddleOCR-VL（vllm-server）对
-  未缓存的习题页做 OCR，结果按 PDF 哈希缓存（page_N/page.md + page.json）。
+  未缓存的习题页做 OCR，结果按 PDF 哈希缓存并以 READY 标记原子发布。
 """
 
 import argparse
@@ -16,6 +16,15 @@ from paddleocr import PaddleOCRVL
 
 from . import exampaper, exercise_book
 from .extraction import SectionNode, build_section_tree, collect_pages_to_ocr
+from .ocr_cache import (
+    clear_page_failure,
+    create_page_staging_dir,
+    discard_page_staging,
+    ocr_cache_lock,
+    page_cache_is_ready,
+    publish_page_cache,
+    record_page_failure,
+)
 from .utils import fix_markdown_block_latex, image_from_page
 
 logger = logging.getLogger(__name__)
@@ -156,36 +165,35 @@ def create_ocr_pipeline(args: argparse.Namespace) -> PaddleOCRVL:
 def _save_ocr_result(
     res, page_num: int, markdown_path: str, vl_model: str
 ) -> None:
-    """保存单页 OCR 结果（已缓存则跳过）。"""
-    page_dir = os.path.join(markdown_path, f"page_{page_num}")
-    save_path = os.path.join(page_dir, "page.md")
-    if os.path.exists(save_path):
+    """把单页结果写到临时目录，校验 Markdown/JSON 后原子发布。"""
+    if page_cache_is_ready(markdown_path, page_num):
         return
-    res.save_to_markdown(save_path=save_path, show_formula_number=True)
-    # parsing_res_list 同时保留了 block_content/block_bbox，后处理可据此把
-    # 结构化习题映射回 PDF 页面。JSON 保存失败不应让已经成功的 OCR 文本作废。
+    staging_dir = create_page_staging_dir(markdown_path, page_num)
     try:
-        res.save_to_json(
-            save_path=os.path.join(page_dir, "page.json"), ensure_ascii=False
+        res.save_to_markdown(
+            save_path=os.path.join(staging_dir, "page.md"),
+            show_formula_number=True,
         )
-    except Exception as exc:
-        logger.warning("第 %d 页 OCR JSON 保存失败，bbox 将为空: %s", page_num, exc)
-    # 重跑成功后清掉上次失败的标记，让 FAILED.txt 只代表当前状态
-    failed_path = os.path.join(page_dir, "FAILED.txt")
-    if os.path.exists(failed_path):
-        os.remove(failed_path)
-    # paddleocrvl 小 bug：$$ 块公式首尾带空格，VSCode preview 渲染不了
-    if "PaddleOCR" in vl_model:
-        fix_markdown_block_latex(page_dir)
+        # parsing_res_list 同时保留 block_content/block_bbox；Markdown 与 JSON
+        # 必须作为同一页缓存一起成功，不能暴露其中任意一个半成品。
+        res.save_to_json(
+            save_path=os.path.join(staging_dir, "page.json"), ensure_ascii=False
+        )
+        # paddleocrvl 小 bug：$$ 块公式首尾带空格，VSCode preview 渲染不了。
+        # 后处理也在临时目录完成，最终目录始终只出现完整版本。
+        if "PaddleOCR" in vl_model:
+            fix_markdown_block_latex(staging_dir)
+        publish_page_cache(staging_dir, markdown_path, page_num)
+        clear_page_failure(markdown_path, page_num)
+    finally:
+        discard_page_staging(staging_dir)
 
 
 def _ocr_single_page(
     doc, page_num: int, markdown_path: str, vl_model: str, pipeline: PaddleOCRVL
 ) -> None:
     """单页 OCR；失败时记录 FAILED 标记并跳过，不让整本中断。"""
-    page_dir = os.path.join(markdown_path, f"page_{page_num}")
-    save_path = os.path.join(page_dir, "page.md")
-    if os.path.exists(save_path):
+    if page_cache_is_ready(markdown_path, page_num):
         return
     try:
         img = image_from_page(doc[page_num - 1])
@@ -193,9 +201,7 @@ def _ocr_single_page(
         _save_ocr_result(res, page_num, markdown_path, vl_model)
     except Exception as e:
         logger.error("第 %d 页 OCR 失败，跳过: %s", page_num, e)
-        os.makedirs(page_dir, exist_ok=True)
-        with open(os.path.join(page_dir, "FAILED.txt"), "w", encoding="utf-8") as f:
-            f.write(str(e))
+        record_page_failure(markdown_path, page_num, e)
 
 
 def ocr_pages(
@@ -204,7 +210,19 @@ def ocr_pages(
     markdown_path: str,
     pipeline: PaddleOCRVL,
 ) -> None:
-    """对习题页做 OCR；已缓存的页面自动跳过（全部有缓存则完全不碰 OCR 服务）。"""
+    """在 PDF hash 文件锁内补齐 OCR 页面，避免相同文档并发写缓存。"""
+    with ocr_cache_lock(markdown_path):
+        _ocr_pages_locked(args, sections, markdown_path, pipeline)
+
+
+def _ocr_pages_locked(
+    args: argparse.Namespace,
+    sections: list[SectionNode],
+    markdown_path: str,
+    pipeline: PaddleOCRVL,
+) -> None:
+    """锁内重新检查缺页并生产缓存；调用方不得绕过 ``ocr_pages``。"""
+    # 缺页必须在取得锁之后计算：等待锁期间，另一个请求可能已经完成 OCR。
     pages_to_ocr = collect_pages_to_ocr(sections, markdown_path)
     if not pages_to_ocr:
         logger.info("所有习题页均已有缓存，自动跳过 OCR")
@@ -230,9 +248,7 @@ def ocr_pages(
         missing = [
             p
             for p in pages_to_ocr
-            if not os.path.exists(
-                os.path.join(markdown_path, f"page_{p}", "page.md")
-            )
+            if not page_cache_is_ready(markdown_path, p)
         ]
         if missing:
             logger.warning(

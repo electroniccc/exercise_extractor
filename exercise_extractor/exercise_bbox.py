@@ -3,7 +3,7 @@
 OCR 阶段会在 ``page_N/page.json`` 保存 PaddleOCR-VL 的原始 JSON。这里仅
 使用 ``parsing_res_list`` 中已经合并好的 ``block_content/block_bbox``，不使用
 更细碎的版面检测框；随后根据题号、题目文本和习题页码，为每道题附加题目级
-``bbox``。缺少 JSON（例如旧缓存）或无法可靠匹配时返回空数组，不影响提取。
+``bbox``。缓存未完整发布或无法可靠匹配时返回空数组，不影响提取。
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ import re
 from typing import Any
 
 from .latex_text import latex_to_unicode
+from .ocr_cache import page_cache_is_ready
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,8 @@ def _result_payload(value: Any) -> dict[str, Any] | None:
 
 def load_page_blocks(markdown_path: str, page: int) -> list[dict[str, Any]]:
     """读取一页 OCR JSON，返回可用于题目匹配的解析块。"""
+    if not page_cache_is_ready(markdown_path, page):
+        return []
     json_path = os.path.join(markdown_path, f"page_{page}", "page.json")
     if not os.path.isfile(json_path):
         return []

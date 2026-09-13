@@ -39,7 +39,7 @@ def _image_group_hash(paths: list[str]) -> str:
         with open(path, "rb") as stream:
             for chunk in iter(lambda: stream.read(65536), b""):
                 digest.update(chunk)
-    return digest.hexdigest()[:16]
+    return digest.hexdigest()[:32]
 
 
 def _prepare_source(

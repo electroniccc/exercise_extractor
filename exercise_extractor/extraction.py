@@ -17,6 +17,7 @@ from typing import TypedDict
 
 from . import answers
 from .html_tables import replace_html_tables
+from .ocr_cache import page_cache_is_ready
 from .parse_md_exercises import (
     Exercise,
     demote_exercise_headings,
@@ -373,18 +374,15 @@ def build_section_tree(
 def collect_pages_to_ocr(
     sections: list[SectionNode], markdown_path: str
 ) -> list[int]:
-    """遍历小节树，返回所有尚未缓存的习题页（已存在 page.md 的跳过）。"""
+    """遍历小节树，返回所有尚未完整发布（含 READY）的习题页。"""
     pages: set[int] = set()
 
     def walk(node: SectionNode) -> None:
         if node.get("has_exercise") or node.get("is_answers"):
             start_page, end_page = node["exercise_page_range"]
             for page_num in range(start_page, end_page):
-                if not os.path.exists(
-                    os.path.join(markdown_path, f"page_{page_num}", "page.md")
-                ):
-                    # 上次失败的页（FAILED.txt）下次仍会重跑 OCR：
-                    # 失败往往是临时的（服务端 OOM/语法校验），重跑有机会成功
+                if not page_cache_is_ready(markdown_path, page_num):
+                    # 失败页及缺少 READY 的半成品下次仍会重跑 OCR。
                     pages.add(page_num)
         for child_node in node.get("children", []):
             walk(child_node)
@@ -423,7 +421,7 @@ def combine_section_pages(
                 page_markdown_path = os.path.join(
                     markdown_path, f"page_{page_num}", "page.md"
                 )
-                if os.path.exists(page_markdown_path):
+                if page_cache_is_ready(markdown_path, page_num):
                     with open(
                         page_markdown_path, "r", encoding="utf-8", errors="ignore"
                     ) as f:

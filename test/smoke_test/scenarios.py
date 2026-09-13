@@ -29,6 +29,12 @@ def test_textbook_fake_cache() -> None:
             os.path.join(md_path, "page_2", "page.md"), "w", encoding="utf-8"
         ) as f:
             f.write(load_scenario("textbook_fake_cache_page2.txt"))
+        for page_num in (1, 2):
+            page_dir = os.path.join(md_path, f"page_{page_num}")
+            with open(os.path.join(page_dir, "page.json"), "w", encoding="utf-8") as f:
+                json.dump({"parsing_res_list": []}, f)
+            with open(os.path.join(page_dir, "READY"), "w", encoding="utf-8") as f:
+                f.write("ready\n")
         node = {
             "title": "习题 1-1",
             "has_exercise": True,

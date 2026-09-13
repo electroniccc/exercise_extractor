@@ -13,6 +13,7 @@ import re
 from typing import NotRequired, TypedDict
 
 from .extraction import SectionNode
+from .ocr_cache import page_cache_is_ready
 from .public_schema import _public_section_title, public_section_from_node
 
 logger = logging.getLogger(__name__)
@@ -60,7 +61,7 @@ def collect_report(
             cached = [
                 p
                 for p in pages
-                if os.path.exists(os.path.join(markdown_path, f"page_{p}", "page.md"))
+                if page_cache_is_ready(markdown_path, p)
             ]
             if node.get("is_answers"):
                 answer_sections = node.get("answer_sections", [])
