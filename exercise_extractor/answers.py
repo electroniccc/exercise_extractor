@@ -191,6 +191,66 @@ def _collect_exercise_targets(sections) -> list[dict]:
     return targets
 
 
+def _answer_section_kind(*titles: str | None) -> str | None:
+    """从答案章节/答案块标题推断其对应的是思考题还是常规习题。"""
+    title = normalize_section(" ".join(text or "" for text in titles))
+    if "思考题" in title:
+        return "thought"
+    if any(keyword in title for keyword in ("习题", "练习", "作业")):
+        return "exercise"
+    return None
+
+
+def _target_kind(target: dict) -> str | None:
+    """识别目标 section 是思考题还是常规习题。"""
+    return _answer_section_kind(target.get("title")) or _answer_section_kind(
+        target.get("path")
+    )
+
+
+def _eligible_targets(candidates: list[tuple[int, dict]], kind: str | None):
+    """按答案块类型排除语义冲突的目标，未知类型目标仍作为兜底。"""
+    if kind is None:
+        return candidates
+    same_kind = [item for item in candidates if _target_kind(item[1]) == kind]
+    if same_kind:
+        return same_kind
+    return [item for item in candidates if _target_kind(item[1]) is None]
+
+
+def _choose_answer_target(
+    candidates: list[tuple[int, dict]],
+    answer_section: AnswerSection,
+    *,
+    source_title: str | None,
+    chapter_level: bool,
+) -> tuple[int, dict] | None:
+    """选择类型兼容且尽量题数相符的目标，最终保留目录顺序作为兜底。"""
+    kind = _answer_section_kind(source_title, answer_section.get("title"))
+    candidates = _eligible_targets(candidates, kind)
+    if not candidates:
+        return None
+
+    if chapter_level:
+        explicit = [item for item in candidates if not item[1]["implicit"]]
+        if explicit:
+            candidates = explicit
+
+    # 泛化的“参考答案”等标题没有说明题型时，同章有多个候选且题数无法区分，
+    # 默认优先常规习题，再用题数相符度打破同类候选之间的平局；明确标注
+    # “思考题”的答案不受此默认影响，避免 OCR 分段题数刚好与思考题相同造成串配。
+    if kind is None:
+        exercises = [item for item in candidates if _target_kind(item[1]) == "exercise"]
+        if exercises:
+            candidates = exercises
+
+    answer_count = _effective_answer_count(answer_section.get("answers", []))
+    exact_count = [item for item in candidates if item[1]["count"] == answer_count]
+    if exact_count:
+        candidates = exact_count
+    return candidates[0]
+
+
 def match_answers(
     sections: list[dict], answer_section: dict
 ) -> list[dict]:
@@ -221,7 +281,13 @@ def match_answers(
     used: set[int] = set()
 
     for index, target in enumerate(targets):
-        match_section_answers(copied_blocks, targets, index, used)
+        match_section_answers(
+            copied_blocks,
+            targets,
+            index,
+            used,
+            source_title=answer_section.get("title"),
+        )
         node = target["node"]
         # match_section_answers 将临时 answer_section 挂到 node 上；把公开的
         # 诊断信息固化后再清理临时字段。
@@ -252,50 +318,68 @@ def match_answers(
 
 
 def match_answer_sections(
-    answer_sections: list[AnswerSection], sections
+    answer_sections: list[AnswerSection],
+    sections,
+    *,
+    source_title: str | None = None,
 ) -> None:
     """把答案块匹配到已提取的习题节点，并记录数量校验结果。
 
-    策略：答案块按目录顺序，取第一个“未使用且章号相同”的习题节点；
-    章号相同但多个（如复变的两篇都有第1章）时按顺序一一对应。
-    章级答案块（标题含“章”，如 "第一篇 › 第1章"）优先匹配显式习题节点
-    （第N章习题），隐式节尾节点只作兜底——避免被章内部的节尾节点抢先。
-    找不到章号匹配时退回标题包含匹配。count_match 表示答案数与习题数是否一致。
+    策略：先按章号筛选，再依据答案源/目标标题区分思考题与常规习题；泛化
+    答案标题在同章同时存在两类节点时默认匹配常规习题，并用答案题数消歧。
+    章号相同但有多个同类候选（如复变的两篇都有第1章）时仍按顺序兜底。
+    章级答案块（标题含“章”，如 "第一篇 › 第1章"）优先匹配显式节点，
+    隐式节尾节点只作兜底。count_match 表示答案数与习题数是否一致。
+    找不到章号匹配时退回标题包含匹配。
     """
     targets = _collect_exercise_targets(sections)
     used: set[int] = set()
 
-    def pick(candidates, chapter):
-        for i, t in candidates:
-            if i in used:
-                continue
-            if chapter is not None and t["chapter"] == chapter:
-                return (i, t)
-        return None
-
     for sec in answer_sections:
         chapter = extract_chapter_number(sec["title"])
         indexed = list(enumerate(targets))
+        candidates = [
+            (i, target)
+            for i, target in indexed
+            if i not in used
+            and chapter is not None
+            and target["chapter"] == chapter
+        ]
         if "章" in (sec["title"] or ""):
             # 章级答案块：优先显式习题节点，隐式节尾节点兜底
-            best = pick([x for x in indexed if not x[1]["implicit"]], chapter)
-            if best is None:
-                best = pick(indexed, chapter)
+            best = _choose_answer_target(
+                candidates,
+                sec,
+                source_title=source_title,
+                chapter_level=True,
+            )
         else:
             # §小节级答案块：显式/隐式节点都可
-            best = pick(indexed, chapter)
+            best = _choose_answer_target(
+                candidates,
+                sec,
+                source_title=source_title,
+                chapter_level=False,
+            )
         if best is None:
             sec_norm = normalize_section(sec["title"])
-            for i, t in enumerate(targets):
-                if i in used:
-                    continue
-                if sec_norm and (
-                    sec_norm == normalize_section(t["title"])
-                    or sec_norm in normalize_section(t["path"])
-                    or normalize_section(t["title"]) in sec_norm
-                ):
-                    best = (i, t)
-                    break
+            title_candidates = [
+                (i, target)
+                for i, target in enumerate(targets)
+                if i not in used
+                and sec_norm
+                and (
+                    sec_norm == normalize_section(target["title"])
+                    or sec_norm in normalize_section(target["path"])
+                    or normalize_section(target["title"]) in sec_norm
+                )
+            ]
+            best = _choose_answer_target(
+                title_candidates,
+                sec,
+                source_title=source_title,
+                chapter_level=False,
+            )
         if best is not None:
             i, t = best
             used.add(i)
@@ -401,12 +485,13 @@ def match_section_answers(
     targets: list[dict],
     target_index: int,
     used: set[int],
+    *,
+    source_title: str | None = None,
 ) -> None:
     """把最早的可用答案块匹配给第 target_index 个习题节点并逐题填充。
 
-    流式提取时按树序逐节调用；分配逻辑与 match_answer_sections 等价：
-    答案块按目录顺序取第一个“未使用且章号相同”的节点；章级答案块
-    优先显式习题节点，隐式节尾节点只作兜底；标题归一化再兜底。
+    流式提取时按树序逐节调用；答案源标题用于避免思考题与常规习题串配。
+    章级答案块优先显式节点，隐式节尾节点只作兜底；标题归一化再兜底。
     """
     target = targets[target_index]
     chosen: tuple[int, AnswerSection] | None = None
@@ -414,6 +499,22 @@ def match_section_answers(
         if i in used:
             continue
         chapter = extract_chapter_number(sec["title"])
+        kind = _answer_section_kind(source_title, sec.get("title"))
+        if not _eligible_targets([(target_index, target)], kind):
+            continue
+        if (
+            kind is None
+            and _target_kind(target) == "thought"
+            and chapter is not None
+            and target["chapter"] == chapter
+            and any(
+                other["chapter"] == chapter
+                and _target_kind(other) == "exercise"
+                for other in targets
+            )
+        ):
+            # 泛化答案章节没有题型提示时，遍历顺序不能让思考题抢先消费章级答案。
+            continue
         # 章级答案块：当前是隐式节尾节点且同章还有显式节点时跳过
         if (
             "章" in (sec["title"] or "")
@@ -499,7 +600,11 @@ def extract_and_match(
                         if new_text != text:
                             item[field] = new_text
         if match_enabled:
-            match_answer_sections(answer_sections, sections)
+            match_answer_sections(
+                answer_sections,
+                sections,
+                source_title=node.get("title"),
+            )
         node["answer_sections"] = answer_sections
     # 逐题填充：把答案内容填进对应习题的 answer 字段
     if match_enabled:

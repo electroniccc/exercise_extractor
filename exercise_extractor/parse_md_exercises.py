@@ -39,18 +39,22 @@ _NUMBER_SEPARATOR = r"([.．、)）])"
 # 行首可能出现的 LaTeX/OCR 噪声前缀（星号、上下标标记、数学定界符等），
 # 任何教材的 OCR 输出都可能带这类符号；只允许它们存在、不要求必须有。
 _EXERCISE_JUNK = r"[*^{}\s$]*"
-# 区间型题号："4—6. ..."、"4-6、..."（常见于答案里把若干题合并作答）
+# 连字符型题号：既可能是区间（"4—6. ..."），也可能是章-题编号
+# （"1-1. ..."）；后者要用两段题号参与递增判断，才能逐题切分。
 EXERCISE_RANGE_RE = re.compile(
     r"^\s*"
     + _EXERCISE_JUNK
     + r"(\d{1,3})\s*"
     + _EXERCISE_JUNK
-    + r"[—-]\s*"
+    + r"[—\-~～〜]\s*"
     + _EXERCISE_JUNK
     + r"(\d{1,3})\s*"
     + _EXERCISE_JUNK
     + _NUMBER_SEPARATOR
     + r"\*{0,2}(?!\d)\s*"
+)
+_NUMBER_RANGE_LABEL_RE = re.compile(
+    r"\s*(\d{1,3})\s*[—\-~～〜]\s*(\d{1,3})\s*"
 )
 # 普通题号："1. 求..."、"1．..."、"1、..."、"1）..."
 # （(?!\d) 防止把 "2.5" 之类的小数误判为题号）
@@ -146,11 +150,23 @@ def page_marker(page_num: int) -> str:
 
 
 def parse_number_key(num_str: str) -> tuple[int, ...] | None:
-    """题号转整数元组："1.1.7" -> (1, 1, 7)，"1" -> (1,)。解析失败返回 None。"""
+    """题号转整数元组："1.1.7" -> (1, 1, 7)，"1-2" -> (1, 2)。"""
+    range_match = _NUMBER_RANGE_LABEL_RE.fullmatch(num_str)
+    if range_match:
+        return int(range_match.group(1)), int(range_match.group(2))
     try:
         return tuple(int(p) for p in num_str.split("."))
     except ValueError:
         return None
+
+
+def _keys_continuous(a: tuple[int, ...], b: tuple[int, ...]) -> bool:
+    """b 是否紧接 a：同前缀下末位递增 1~2，允许 OCR 漏号。"""
+    return (
+        len(a) == len(b)
+        and a[:-1] == b[:-1]
+        and 1 <= b[-1] - a[-1] <= 2
+    )
 
 
 def numbers_are_consecutive(numbers: list[str]) -> bool:
@@ -165,9 +181,24 @@ def numbers_are_consecutive(numbers: list[str]) -> bool:
     if any(k is None for k in keys):
         return False
     ok = 0
-    for a, b in zip(keys, keys[1:]):
-        if len(a) == len(b) and a[:-1] == b[:-1] and 1 <= b[-1] - a[-1] <= 2:
+    for index, (a, b) in enumerate(zip(keys, keys[1:])):
+        if _keys_continuous(a, b):
             ok += 1
+            continue
+        if len(a) == len(b):
+            continue
+        previous_is_range = (
+            _NUMBER_RANGE_LABEL_RE.fullmatch(numbers[index]) is not None
+        )
+        current_is_range = (
+            _NUMBER_RANGE_LABEL_RE.fullmatch(numbers[index + 1]) is not None
+        )
+        if previous_is_range and len(a) == 2 and len(b) == 1:
+            if 1 <= b[0] - a[-1] <= 2:
+                ok += 1
+        elif current_is_range and len(a) == 1 and len(b) == 2:
+            if 1 <= b[0] - a[0] <= 2:
+                ok += 1
     return ok / (len(numbers) - 1) >= 0.5
 
 
@@ -520,7 +551,7 @@ def drop_runs_not_reaching_section_end(
 
 
 def _parse_number_label(text: str) -> tuple[str, tuple[int, ...]] | None:
-    """解析行首题号（允许 OCR 噪声前缀）："3."→("3",(3,))，"3-5."→("3-5",(3,))，
+    """解析行首题号（允许 OCR 噪声前缀）："3."→("3",(3,))，"3-5."→("3-5",(3,5))，
     "3.5"→("3.5",(3,5))。解析失败返回 None。"""
     m = EXERCISE_MULTI_RE.match(text)
     if m:
@@ -528,7 +559,7 @@ def _parse_number_label(text: str) -> tuple[str, tuple[int, ...]] | None:
         return label, tuple(int(p) for p in label.split("."))
     m = EXERCISE_RANGE_RE.match(text)
     if m:
-        return f"{m.group(1)}-{m.group(2)}", (int(m.group(1)),)
+        return f"{m.group(1)}-{m.group(2)}", (int(m.group(1)), int(m.group(2)))
     m = EXERCISE_NUM_RE.match(text)
     if m:
         return m.group(1), (int(m.group(1)),)
@@ -546,15 +577,6 @@ def _advance_display_math_state(line: str, in_display_math: bool) -> bool:
         else:  # ``\]``
             in_display_math = False
     return in_display_math
-
-
-def _keys_continuous(a: tuple[int, ...], b: tuple[int, ...]) -> bool:
-    """b 是否紧接 a：段数相同、前缀相同、末位递增 1~2（允许 OCR 漏号）。"""
-    return (
-        len(a) == len(b)
-        and a[:-1] == b[:-1]
-        and 1 <= b[-1] - a[-1] <= 2
-    )
 
 
 def _heading_is_ocr_number(
@@ -635,6 +657,8 @@ def split_exercises(
     exercise_start_page: int | None = None
     exercise_end_page: int | None = None
     in_display_math = False
+    chapter_prefix: int | None = None
+    previous_was_range_number = False
 
     def flush() -> None:
         nonlocal current, current_num, current_sep, current_section
@@ -692,6 +716,8 @@ def split_exercises(
                 flush()
                 pending.append(line)
                 prev_key = ()
+                chapter_prefix = None
+                previous_was_range_number = False
                 continue
 
         # 例题编号优先于普通数字编号（“例 1.2 …”）。
@@ -706,6 +732,7 @@ def split_exercises(
         else:
             # 多级题号（"1.1.1"、"1. 1.7"、"1. 1. 10"）优先匹配
             m_multi = EXERCISE_MULTI_RE.match(line)
+        is_range_number = False
         if m_example:
             pass
         elif m_multi:
@@ -720,7 +747,8 @@ def split_exercises(
             m_range = EXERCISE_RANGE_RE.match(line)
             if m_range:
                 label = f"{m_range.group(1)}-{m_range.group(2)}"
-                num_key = (int(m_range.group(1)),)
+                num_key = (int(m_range.group(1)), int(m_range.group(2)))
+                is_range_number = True
                 sep = m_range.group(3)
                 stripped = line[m_range.end():]
             else:
@@ -728,6 +756,17 @@ def split_exercises(
                 if m_num:
                     label = m_num.group(1)
                     num_key = (int(m_num.group(1)),)
+                    # OCR 偶尔只在某题漏掉章号（例如 1-11 后识别为 12.，
+                    # 随后又恢复成 1~13）。在已确认章-题编号序列时补回前缀，
+                    # 让它仍能成为下一道题，而不是阻断后续序列。
+                    if (
+                        chapter_prefix is not None
+                        and len(prev_key) == 2
+                        and prev_key[0] == chapter_prefix
+                        and num_key[0] > prev_key[1]
+                    ):
+                        num_key = (chapter_prefix, num_key[0])
+                        label = f"{chapter_prefix}-{m_num.group(1)}"
                     sep = m_num.group(2)
                     stripped = line[m_num.end():]
                 else:
@@ -739,13 +778,32 @@ def split_exercises(
         # 一个标题区间内，真正的题号序列不会从 ``1.`` 突然变成 ``74.000``
         # 或反过来。多级题号当然仍支持，但必须保持同一层级；这也是 OCR 漏掉
         # 显示公式定界符时，对公式小数误判的第二层防线。
-        is_new_exercise = (
-            num_key is not None
-            and num_key > prev_key
-            and (not prev_key or len(num_key) == len(prev_key))
+        is_new_exercise = num_key is not None and (
+            not prev_key
+            or (
+                len(num_key) == len(prev_key)
+                and num_key > prev_key
+            )
+            or (
+                len(num_key) != len(prev_key)
+                and (is_range_number or previous_was_range_number)
+                and num_key[0] > prev_key[0]
+            )
         )
         if is_new_exercise:
             flush()
+            if (
+                is_range_number
+                and previous_was_range_number
+                and len(num_key) == 2
+                and len(prev_key) == 2
+                and num_key[0] == prev_key[0]
+                and 1 <= num_key[1] - prev_key[1] <= 2
+            ):
+                # 两个连续的同前缀连字符题号表明这里是“章-题”编号，
+                # 后续 OCR 漏掉章号时可按同一编号序列恢复。
+                chapter_prefix = num_key[0]
+            previous_was_range_number = is_range_number
             # pending 里的标题行作为“所属小节”记录，不再拼进题干；
             # 行首的 LaTeX/星号噪声（如 “##  $ ^{*} $习题 7-10”）一并清掉，
             # 便于与目录标题（“*习题 7-10”）做归一化匹配

@@ -287,6 +287,8 @@ def test_toc_and_boundaries() -> None:
 
 
 def test_answers_match() -> None:
+    import exercise_extractor.answers as answers
+
     from exercise_extractor.answers import (
         _effective_answer_count,
         extract_chapter_number,
@@ -345,6 +347,135 @@ def test_answers_match() -> None:
     check("已有内联答案不被覆盖", exs[0]["answer"] == "内联答案")
 
     from exercise_extractor import match_answers
+
+    mixed_sections = [
+        {
+            "title": "思考题",
+            "path": "第一章/思考题",
+            "has_exercise": True,
+            "children": [],
+            "exercises": [
+                {"number": str(i), "original_number": str(i), "content": f"思考{i}", "answer": ""}
+                for i in (1, 2)
+            ],
+        },
+        {
+            "title": "习题",
+            "path": "第一章/习题",
+            "has_exercise": True,
+            "children": [],
+            "exercises": [
+                {"number": str(i), "original_number": str(i), "content": f"习题{i}", "answer": ""}
+                for i in (1, 2, 3)
+            ],
+        },
+    ]
+    chapter_answers = [
+        {
+            "title": "第一章",
+            "answers": [
+                {"number": str(i), "content": f"习题答案{i}"} for i in (1, 2)
+            ],
+        }
+    ]
+    from copy import deepcopy
+
+    generic_answer_sections = deepcopy(mixed_sections)
+    match_answer_sections(
+        chapter_answers, mixed_sections, source_title="习题答案"
+    )
+    fill_exercise_answers(mixed_sections)
+    check(
+        "习题答案不匹配到先出现的思考题",
+        mixed_sections[0]["exercises"][0]["answer"] == ""
+        and mixed_sections[0].get("answer_match", {}).get("matched") is not True
+        and mixed_sections[1]["exercises"][0]["answer"] == "习题答案1"
+        and mixed_sections[1]["answer_match"]["matched"] is True,
+    )
+    generic_answers = [
+        {
+            "title": "第一章",
+            "answers": [
+                {"number": str(i), "content": f"参考答案{i}"} for i in (1, 2)
+            ],
+        }
+    ]
+    match_answer_sections(
+        generic_answers, generic_answer_sections, source_title="参考答案"
+    )
+    check(
+        "泛化参考答案同章优先匹配常规习题",
+        generic_answer_sections[0].get("answer_match", {}).get("matched") is not True
+        and generic_answer_sections[1].get("answer_match", {}).get("matched") is True,
+    )
+
+    stream_sections = deepcopy(generic_answer_sections)
+    stream_targets = answers.collect_exercise_targets(stream_sections)
+    stream_used: set[int] = set()
+    stream_answers = [
+        {
+            "title": "第一章",
+            "answers": [
+                {"number": str(i), "content": f"流式答案{i}"} for i in (1, 2)
+            ],
+        }
+    ]
+    answers.match_section_answers(
+        stream_answers,
+        stream_targets,
+        0,
+        stream_used,
+        source_title="习题答案",
+    )
+    answers.match_section_answers(
+        stream_answers,
+        stream_targets,
+        1,
+        stream_used,
+        source_title="习题答案",
+    )
+    check(
+        "逐节答案匹配不会把习题答案回填到思考题",
+        stream_sections[0]["exercises"][0]["answer"] == ""
+        and stream_sections[1]["exercises"][0]["answer"] == "流式答案1"
+        and stream_used == {0},
+    )
+
+    # 流式/公共 JSON 匹配也必须把答案章节标题传到同一套类型约束中。
+    mixed_public = [
+        {
+            "document_name": "测试书",
+            "title": title,
+            "path": f"第一章/{title}",
+            "has_exercise": True,
+            "exercises": [
+                {
+                    "number": str(i),
+                    "original_number": str(i),
+                    "content": f"{title}{i}",
+                    "answer": "",
+                    "solution_steps": "",
+                    "question_type": "short_answer",
+                    "pages": [],
+                }
+                for i in range(1, count + 1)
+            ],
+        }
+        for title, count in (("思考题", 2), ("习题", 3))
+    ]
+    public_matched = match_answers(
+        mixed_public,
+        {
+            "title": "参考答案",
+            "answer_sections": chapter_answers,
+        },
+    )
+    check(
+        "公共 match_answers 泛化答案默认不匹配思考题",
+        public_matched[0]["exercises"][0]["answer"] == ""
+        and public_matched[0]["answer_match"]["matched"] is False
+        and public_matched[1]["exercises"][0]["answer"] == "习题答案1",
+    )
 
     public_section = {
         "document_name": "测试书",

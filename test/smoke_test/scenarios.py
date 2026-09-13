@@ -124,6 +124,79 @@ def test_textbook_decimal_display_formula() -> None:
     )
 
 
+def test_textbook_chapter_prefixed_numbers() -> None:
+    """目录 OCR 空格噪声及“章-题”编号不能漏节或粘题。"""
+    from exercise_extractor.extraction import build_section_tree, extract_exercises
+    from exercise_extractor.parse_md_exercises import (
+        numbers_are_consecutive,
+        split_exercises,
+    )
+    from exercise_extractor.toc_detect import is_skippable_title
+
+    toc = [
+        {
+            "title": "第一章",
+            "page_num": 1,
+            "children": [
+                {"title": "本章提要", "page_num": 2, "children": []},
+                {"title": "思考题", "page_num": 3, "children": []},
+                {"title": "习 题", "page_num": 4, "children": []},
+                {"title": "习题答案", "page_num": 6, "children": []},
+            ],
+        }
+    ]
+    sections = build_section_tree(toc, doc_type="textbook", doc_page_count=10)
+    chapter = sections[0]
+    titles = [node["title"] for node in chapter["children"]]
+    exercise = next(node for node in chapter["children"] if node["title"] == "习 题")
+    check(
+        "目录空格噪声仍识别习题节点",
+        exercise.get("has_exercise")
+        and not exercise.get("implicit")
+        and "本章提要" not in titles,
+        str([(n["title"], n.get("has_exercise"), n.get("implicit")) for n in chapter["children"]]),
+    )
+    check(
+        "本章提要标题跳过",
+        is_skippable_title("本章提要"),
+    )
+
+    content = load_scenario("textbook_chapter_prefixed_numbers.txt")
+    exercise["exercise_content"] = content
+    extract_exercises([chapter])
+    extracted = exercise.get("exercises", [])
+    check(
+        "目录节点按页内标题提取出章末习题",
+        len(extracted) == 2
+        and [item.get("original_number") for item in extracted] == ["1-1", "1-2"],
+        str([(item.get("number"), item.get("original_number")) for item in extracted]),
+    )
+    exercises = split_exercises(content, check_section_end=False)
+    check(
+        "章-题编号及 OCR 波浪线均逐题切分",
+        [item["number"] for item in exercises]
+        == ["1-1", "1-2", "1-11", "1-12", "1-13", "1-14", "1-1", "1-2"],
+        str([item["number"] for item in exercises]),
+    )
+    intervals = split_exercises(
+        "3. 前一道题。\n4-6. 区间题。\n7. 后一道题。",
+        check_section_end=False,
+    )
+    check(
+        "真正的区间题号仍独立切分",
+        [item["number"] for item in intervals] == ["3", "4-6", "7"],
+        str([item["number"] for item in intervals]),
+    )
+    check(
+        "章-题编号可通过连续性校验",
+        numbers_are_consecutive(["1-1", "1-2", "1-4"]),
+    )
+    check(
+        "区间题号与后续普通题号可连续",
+        numbers_are_consecutive(["4-6", "7"]),
+    )
+
+
 def test_exercise_book_no_toc() -> None:
     """习题集无目录：整本按小标题层级切块。"""
     from exercise_extractor import exercise_book
@@ -421,6 +494,7 @@ def test_figure_group() -> None:
 SCENARIO_TESTS = {
     "textbook_fake_cache_page1.txt": test_textbook_fake_cache,
     "textbook_decimal_display_formula.txt": test_textbook_decimal_display_formula,
+    "textbook_chapter_prefixed_numbers.txt": test_textbook_chapter_prefixed_numbers,
     "exercise_book_prefix.txt": test_exercise_book_prefix,
     "exercise_book_no_toc.txt": test_exercise_book_no_toc,
     "answers_split_sections.txt": test_answers_split,

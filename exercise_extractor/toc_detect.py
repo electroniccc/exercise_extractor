@@ -9,6 +9,7 @@
 新的检测策略。
 """
 
+import re
 from typing import TypedDict
 
 
@@ -62,6 +63,7 @@ TOC_SKIP_TERMS = (
     "目录",
     "小结",
     "总结",
+    "本章提要",
     "附表",
     "附录",
     "参考文献",
@@ -91,7 +93,8 @@ TOC_SKIP_TERMS = (
 
 
 def is_exercise_title(title: str) -> bool:
-    t = title.lower()
+    # 目录 OCR 偶尔会把复合词拆开（如“习 题”），匹配前去掉空白噪声。
+    t = re.sub(r"\s+", "", title.lower())
     return any(keyword in t for keyword in EXERCISE_TITLE_KEYWORDS)
 
 
