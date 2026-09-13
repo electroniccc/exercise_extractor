@@ -8,7 +8,7 @@
 |---|---|
 | `exercise_extractor/main.py` | 主入口与 CLI（argparse）：解析参数后走 pipeline，安装后可用 `python -m exercise_extractor` 调用 |
 | `exercise_extractor/pipeline.py` | 可复用提取管线：`run_pipeline` 整树一次处理（CLI 用）、`iter_sections` 流式逐节处理（对外 API 用）：答案节点先 OCR 切块，再按树序逐节 OCR → 拼页 → 切分 → 回填答案 → yield |
-| `exercise_extractor/api.py` | 对外公共 API `extract_exercise(source, source_type="pdf", doc_type, ...)`：输入 PDF 路径，返回**按节流式产出**的迭代器（每完成一个有编号习题的 section 就 yield 一个不含 `children` 的扁平公共 JSON object，section 用 `path` 记录目录树路径）；OCR 引擎参数（vl_rec_backend/vl_rec_server_url/vl_rec_max_concurrency/vl_rec_api_model_name）与 ocr/toc 的 engine/device（ocr_device/ocr_engine/toc_device/toc_engine）全部可配；预留 source_type 扩展 image/markdown |
+| `exercise_extractor/api.py` | 对外公共 API：`extract_exercise(source, doc_type, ...)` 输入 PDF/图片并按节流式产出；`extract_exercise_from_markdown(markdown, ...)` 无 OCR 地按 Markdown 标题或试卷题型切分，并将“答案/参考答案/习题解答”标题后的内容返回为 `is_answers` section；二者都返回不含 `children` 的扁平公共 JSON section；OCR 引擎与 ocr/toc 的 engine/device 可配 |
 | `exercise_extractor/__main__.py` | `python -m exercise_extractor` 调试入口（等价于仓库根 `python main.py`） |
 | `exercise_extractor/oss.py` | OSS/MinIO 图片上传：传 oss_* 参数（endpoint/access_key/secret_key/bucket）时，把 markdown 里的本地图片上传并把 src 替换为 OSS 公开 URL；缺配置完全不生效 |
 | `exercise_extractor/ocr.py` | 目录识别（build_sections，toc_forge + 阿里云 vLLM）与 OCR（ocr_pages，PaddleOCR-VL） |
@@ -109,11 +109,10 @@ python main.py --input temp/xxx.pdf --output output --doc_type textbook
 python -m exercise_extractor --input xxx.pdf --output output --doc_type textbook
 exercise-extractor --input xxx.pdf --output output --doc_type exampaper
 
-# 公共 API：输入 PDF，按节流式返回习题（每完成一个 section 即 yield）
-from exercise_extractor import extract_exercise
+# 公共 API：输入 PDF 或图片，按节流式返回习题（每完成一个 section 即 yield）
+from exercise_extractor import extract_exercise, extract_exercise_from_markdown
 for section in extract_exercise(
     "xxx.pdf",
-    source_type="pdf",
     doc_type="exercise_book",
     output_dir=None,
     model_dir="/path/to/paddle/official_models",
@@ -123,9 +122,17 @@ for section in extract_exercise(
     vl_rec_api_model_name="PaddleOCR-VL-1.6-0.9B",
 ):
     print(section["title"], len(section["exercises"]), "题")
+
+# 直接切分已获得的 Markdown；无需 OCR 服务或模型目录
+sections = list(extract_exercise_from_markdown(
+    "## 习题 1-1\n\n1. 求极限。\n\n2. 证明结论。",
+    document_name="示例教材",
+    doc_type="textbook",
+))
 ```
 
-`extract_exercise` 默认只返回数据不落盘（迭代器，可提前中断）；普通 section
+`extract_exercise` 与 `extract_exercise_from_markdown` 都返回可提前中断的迭代器。
+前者默认只返回数据不落盘；普通 section
 只 yield 包含至少一道有编号习题的公共 section；答案节点作为供
 `match_answers` 使用的固定 JSON section 保留返回，其他最终没有习题的节点过滤掉。
 `write_outputs=True` 且给 `output_dir`
@@ -134,14 +141,16 @@ for section in extract_exercise(
 安装时若 pip 找不到可先 `--no-deps` 再用已有环境。`model_dir` 不内置机器
 路径：显式传入，或设置环境变量 `EXERCISE_EXTRACTOR_MODEL_DIR`。旧接口名
 `extract_pdf` 保留为别名（后续移除）；`vl_server_url`/`vl_model` 为 OCR
-参数的旧别名（后续移除）。`source_type` 当前仅支持 `"pdf"`，后续扩展
-图片/markdown 时在 `api.SUPPORTED_SOURCE_TYPES` 与分发逻辑中增加。
+参数的旧别名（后续移除）。`extract_exercise` 根据扩展名接受 PDF 或一张/多张
+图片；Markdown 通过 `extract_exercise_from_markdown(markdown, doc_type=..., document_name=...,
+title=..., path=...)` 直接切分，不需要 OCR、模型或缓存。
 
 公共接口的数据边界是严格固定的 JSON 结构：调用方只能向
 `extract_exercise`、`match_answers`、`review_basic` 传入 Python 中可直接
-JSON 序列化的 `dict`/`list`（或 PDF 路径这一明确的源文件参数），不能传入
-内部 `SectionNode`、Markdown 字符串或其它临时对象；接口返回值也只能是固定
-schema 的 Python `dict`/`list`（`extract_exercise` 为逐节 yield 的 dict，
+JSON 序列化的 `dict`/`list`（或 PDF/图片路径这一明确的源文件参数）；
+`extract_exercise_from_markdown` 是唯一接受 Markdown 字符串的公共切分接口。
+调用方不能传入内部 `SectionNode` 或其它临时对象；接口返回值也只能是固定
+schema 的 Python `dict`/`list`（两个提取接口均为逐节 yield 的 dict，
 `match_answers` 为 section dict 列表，`review_basic` 为单个 section dict）。
 公共 section JSON 不含 `children`、`exercise_content` 等内部字段；新增字段必须
 同步更新公共 schema 与测试，不能把内部临时字段直接泄漏给调用方。

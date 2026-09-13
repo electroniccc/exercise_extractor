@@ -668,7 +668,10 @@ def test_api_contract() -> None:
     """extract_exercise 返回迭代器，且入参校验在调用时立即执行。"""
     import inspect
 
-    from exercise_extractor.api import extract_exercise
+    from exercise_extractor.api import (
+        extract_exercise,
+        extract_exercise_from_markdown,
+    )
 
     params = inspect.signature(extract_exercise).parameters
     check(
@@ -696,6 +699,56 @@ def test_api_contract() -> None:
         "image" in __import__(
             "exercise_extractor.api", fromlist=["SUPPORTED_SOURCE_TYPES"]
         ).SUPPORTED_SOURCE_TYPES,
+    )
+    markdown_sections = list(
+        extract_exercise_from_markdown(
+            "## 第一节 极限\n\n1. 求极限。\n\n答：0\n\n"
+            "## 第二节 连续\n\n1. 判断连续性。\n",
+            document_name="测试教材",
+        )
+    )
+    check(
+        "Markdown API 按标题返回独立 section",
+        [item["title"] for item in markdown_sections] == ["第一节 极限", "第二节 连续"]
+        and [len(item["exercises"]) for item in markdown_sections] == [1, 1]
+        and markdown_sections[0]["document_name"] == "测试教材",
+        str(markdown_sections),
+    )
+    check(
+        "Markdown API 保留解答字段与纯题目 content",
+        markdown_sections[0]["exercises"][0]["answer"] == "0"
+        and "##" not in markdown_sections[0]["content"]["original"],
+    )
+    markdown_with_answers = list(
+        extract_exercise_from_markdown(
+            "## 习题\n\n1. 求结果。\n\n## 答案:\n\n"
+            "一、填空题\n\n1. 0\n\n2. 1\n",
+            doc_type="exercise_book",
+        )
+    )
+    check(
+        "Markdown API 将答案标题返回为答案 section",
+        len(markdown_with_answers) == 2
+        and markdown_with_answers[-1].get("is_answers") is True
+        and markdown_with_answers[-1]["title"] == "答案:"
+        and [len(block["answers"]) for block in markdown_with_answers[-1]["answer_sections"]]
+        == [2],
+        str(markdown_with_answers),
+    )
+    markdown_paper_sections = list(
+        extract_exercise_from_markdown(
+            "# 一、选择题\n\n1. 请选择正确答案。\n(A) 甲\n(B) 乙\n\n"
+            "# 二、填空题\n\n2. 填空。\n",
+            doc_type="exampaper",
+            title="测试试卷",
+        )
+    )
+    check(
+        "Markdown API 复用试卷题型 section 切分",
+        [item["title"] for item in markdown_paper_sections] == ["一、选择题", "二、填空题"]
+        and [item["exercises"][0]["question_type"] for item in markdown_paper_sections]
+        == ["single_choice", "fill_in_blank"],
+        str(markdown_paper_sections),
     )
     from exercise_extractor.api import _prepare_source
     from exercise_extractor.ocr import build_sections

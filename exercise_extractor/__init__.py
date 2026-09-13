@@ -3,6 +3,7 @@
 from .api import (
     extract_exercise,
     extract_exercise_from_image,
+    extract_exercise_from_markdown,
     extract_pdf,
     reparse_exercises,
 )
@@ -13,6 +14,7 @@ __version__ = "0.1.0"
 __all__ = [
     "extract_exercise",
     "extract_exercise_from_image",
+    "extract_exercise_from_markdown",
     "extract_pdf",
     "reparse_exercises",
     "match_answers",

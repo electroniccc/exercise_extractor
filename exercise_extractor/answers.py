@@ -43,6 +43,19 @@ class AnswerSection(TypedDict, total=False):
 
 # 行首 § 小节标签（梁昆淼《数学物理方法》答案区间的形态："§1.1 1.（1）..."）
 _SECTION_LABEL_RE = re.compile(r"^\s*§\s*([\d.]+)\s*")
+# 有些讲义的答案区没有 Markdown 标题，而是直接写“ 一、填空题 ”。要求题型
+# 词，避免把“1. 0”“一、由定义…”等普通答案正文误当成分块标题。
+_PLAIN_TYPE_SECTION_RE = re.compile(
+    r"^\s*([一二三四五六七八九十]+)\s*[、.．]\s*"
+    r"((?:单项?|多项?|不定项?)?选择题|填空题|解答题|简答题|计算题|证明题|"
+    r"应用题|综合题|习题)\s*[：:]?\s*$"
+)
+# 答案常写为“1. 0”“4.正交”“2. $x=1$”。通用切分器为兼容 OCR 的
+# “1. 1.7”多级题号，会把前者误解为 1.0；答案区有多个这种行时优先使用
+# 本规则。答案编号后不强制空格，适配讲义常见的紧凑写法。
+_SIMPLE_ANSWER_NUM_RE = re.compile(
+    r"^\s*(\d{1,3})\s*[.．、]\s*(.+?)\s*$"
+)
 
 # 中文数字章号（覆盖常见 1~15 章）
 _CN_NUM = {
@@ -87,13 +100,37 @@ def _renumber(items: list[Exercise]) -> None:
             item["separator"] = "."
 
 
+def _split_simple_answer_lines(content: str) -> list[Exercise]:
+    """切分“1. 答案”式的答案行，避免被误判为多级题号。"""
+    answers: list[Exercise] = []
+    current: Exercise | None = None
+    for line in content.split("\n"):
+        match = _SIMPLE_ANSWER_NUM_RE.match(line)
+        if match:
+            if current is not None:
+                current["content"] = current["content"].strip()
+                answers.append(current)
+            current = {
+                "number": match.group(1),
+                "separator": ".",
+                "content": match.group(2).strip(),
+            }
+        elif current is not None:
+            current["content"] += "\n" + line
+    if current is not None:
+        current["content"] = current["content"].strip()
+        answers.append(current)
+    return answers
+
+
 def split_answer_sections(content: str) -> list[AnswerSection]:
     """按小标题把答案内容切块。
 
-    小标题的三种形态：
+    小标题的四种形态：
     - markdown 标题行（"# 第一篇" / "## 第1章"）：维护“篇 → 章”层级，
       块标题记作 "第一篇 › 第1章"；
     - 行首 § 标签（"§1.1 1.（1）…"）：作为小节标题，标签后的内容归属该块；
+    - 裸的题型标题（"一、填空题" / "二、选择题"）：作为小节标题；
     - 总标题（含“答案/提示”字样的首个标题，如 "## 习题答案"）：跳过。
     """
     sections: list[AnswerSection] = []
@@ -105,7 +142,15 @@ def split_answer_sections(content: str) -> list[AnswerSection]:
         nonlocal current_title, current_lines
         if current_title is not None and current_lines:
             body = "\n".join(current_lines).strip()
-            answers = split_exercises(body, check_section_end=False)
+            simple_answer_lines = sum(
+                bool(_SIMPLE_ANSWER_NUM_RE.match(line))
+                for line in body.split("\n")
+            )
+            answers = (
+                _split_simple_answer_lines(body)
+                if simple_answer_lines >= 2
+                else split_exercises(body, check_section_end=False)
+            )
             answers = [
                 e for e in answers if e.get("number") != "__preamble__"
             ]
@@ -141,6 +186,13 @@ def split_answer_sections(content: str) -> list[AnswerSection]:
             rest = _SECTION_LABEL_RE.sub("", line).strip()
             if rest:
                 current_lines.append(rest)
+            continue
+        plain_type_section = _PLAIN_TYPE_SECTION_RE.match(line)
+        if plain_type_section:
+            flush()
+            current_title = (
+                f"{plain_type_section.group(1)}、{plain_type_section.group(2)}"
+            )
             continue
         if current_title is None:
             continue  # 总标题前的说明文字，忽略
