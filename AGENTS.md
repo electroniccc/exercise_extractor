@@ -6,7 +6,7 @@
 
 | 文件 | 职责 |
 |---|---|
-| `exercise_extractor/main.py` | 主入口与 CLI（argparse）：解析参数后走 pipeline，安装后可用 `python -m exercise_extractor` 调用 |
+| `exercise_extractor/main.py` | 主入口与 CLI（argparse）：PDF/图片走 OCR pipeline，`.md` 直接走 Markdown 切分与答案回填，安装后可用 `python -m exercise_extractor` 调用 |
 | `exercise_extractor/pipeline.py` | 可复用提取管线：`run_pipeline` 整树一次处理（CLI 用）、`iter_sections` 流式逐节处理（对外 API 用）：答案节点先 OCR 切块，再按树序逐节 OCR → 拼页 → 切分 → 回填答案 → yield |
 | `exercise_extractor/api.py` | 对外公共 API：`extract_exercise(source, doc_type, ...)` 输入 PDF/图片并按节流式产出；`extract_exercise_from_markdown(markdown, ...)` 无 OCR 地按 Markdown 标题或试卷题型切分，并将“答案/参考答案/习题解答”标题后的内容返回为 `is_answers` section；二者都返回不含 `children` 的扁平公共 JSON section；OCR 引擎与 ocr/toc 的 engine/device 可配 |
 | `exercise_extractor/__main__.py` | `python -m exercise_extractor` 调试入口（等价于仓库根 `python main.py`） |
@@ -22,7 +22,7 @@
 | `exercise_extractor/toc_detect.py` | 纯目录树判断：习题章节识别、前后置内容跳过、是否启用节尾搜索 |
 | `exercise_extractor/answers.py` | 习题答案章节：按小标题切分答案、与习题节点匹配（含题数校验） |
 | `exercise_extractor/html_tables.py` | HTML 表格工具：检测严格闭合的 HTML 表格（detect_html_table）、转 markdown 表格（html_table_to_markdown） |
-| `exercise_extractor/postprocess.py` | 后处理：统计报告（collect_report）、导出每节 md/JSON 与 report.json（write_outputs）、控制台摘要（print_summary） |
+| `exercise_extractor/postprocess.py` | 后处理：统计报告、导出每节 md/JSON 与 report.json（内部树用 `write_outputs`，公共 Markdown section 用 `write_public_outputs`）、控制台摘要 |
 | `exercise_extractor/public_schema.py` | 内部目录树到扁平公共 section JSON 的适配层，固定 section/Exercise 字段并移除 `children` 与临时字段 |
 | `exercise_extractor/review/` | Markdown 习题 LLM 审校包：`basic_review.py` 负责基础标点/KaTeX 修复，`math_review.py` 保留后续 SymPy 工具核验（OpenAI-compatible） |
 | `exercise_extractor/utils.py` | 基础工具：页面转图像、文件 SHA256 哈希、markdown 块公式修复 |
@@ -97,6 +97,9 @@ exampaper 分支不经过第 1/5 步：`build_sections` 先返回整卷根节点
 
 ```bash
 python main.py --input temp/xxx.pdf --output output --doc_type textbook
+
+# 已有 Markdown 不经过 OCR/目录识别，直接切分并导出
+python main.py --input temp/xxx.md --output output --doc_type exercise_book
 ```
 
 ## 安装与对外接口

@@ -148,7 +148,7 @@ def split_answer_sections(content: str) -> list[AnswerSection]:
             )
             answers = (
                 _split_simple_answer_lines(body)
-                if simple_answer_lines >= 2
+                if simple_answer_lines >= 1
                 else split_exercises(body, check_section_end=False)
             )
             answers = [
@@ -251,6 +251,15 @@ def _answer_section_kind(*titles: str | None) -> str | None:
         return "thought"
     if any(keyword in title for keyword in ("习题", "练习", "作业")):
         return "exercise"
+    return None
+
+
+def _section_topic(title: str | None) -> str | None:
+    """从题型式标题提取主题词，供 Markdown 裸题型标题的答案匹配兜底。"""
+    text = normalize_section(title)
+    for topic in ("填空", "选择", "计算", "解答", "简答", "证明", "应用", "综合"):
+        if topic in text:
+            return topic
     return None
 
 
@@ -425,6 +434,11 @@ def match_answer_sections(
                     sec_norm == normalize_section(target["title"])
                     or sec_norm in normalize_section(target["path"])
                     or normalize_section(target["title"]) in sec_norm
+                    or (
+                        _section_topic(sec.get("title")) is not None
+                        and _section_topic(sec.get("title"))
+                        == _section_topic(target["title"])
+                    )
                 )
             ]
             best = _choose_answer_target(
@@ -586,7 +600,13 @@ def match_section_answers(
         t_title = normalize_section(target["title"])
         t_path = normalize_section(target["path"])
         if sec_norm and (
-            sec_norm == t_title or sec_norm in t_path or t_title in sec_norm
+            sec_norm == t_title
+            or sec_norm in t_path
+            or t_title in sec_norm
+            or (
+                _section_topic(sec.get("title")) is not None
+                and _section_topic(sec.get("title")) == _section_topic(target["title"])
+            )
         ):
             chosen = (i, sec)
             break

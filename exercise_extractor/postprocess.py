@@ -264,6 +264,85 @@ def write_outputs(
     return report
 
 
+def write_public_outputs(sections: list[dict], output_dir: str) -> Report:
+    """导出公共 section JSON（供无 OCR 的 Markdown CLI 入口使用）。
+
+    Markdown 输入没有可靠 PDF 页码时，用 section 的顺序作为文件名前缀；若内容
+    带 ``<!-- page: N -->`` 并推导出了页码范围，则仍优先使用起始页。答案
+    section 同样写出 Markdown/JSON，但不计入题目总数。
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    report: Report = {"total_exercises": 0, "sections": []}
+    used_names: set[str] = set()
+
+    for index, section in enumerate(sections, start=1):
+        title = str(section.get("title") or f"section_{index}")
+        section_path = str(section.get("path") or title)
+        page_range = section.get("exercise_page_range")
+        if (
+            isinstance(page_range, list)
+            and len(page_range) == 2
+            and all(isinstance(page, int) for page in page_range)
+        ):
+            normalized_range = list(page_range)
+        else:
+            normalized_range = [0, 0]
+        prefix = normalized_range[0] if normalized_range[0] > 0 else index
+        stem = f"{prefix}_{_sanitize_filename(title)}"
+        # 同名 Markdown 标题可合法出现；顺序后缀避免静默覆盖。
+        if stem in used_names:
+            stem = f"{stem}_{index}"
+        used_names.add(stem)
+
+        content = section.get("content")
+        if not isinstance(content, dict):
+            content = {}
+        markdown = (
+            content.get("tool_review")
+            or content.get("basic_review")
+            or content.get("original")
+            or ""
+        )
+        with open(os.path.join(output_dir, f"{stem}.md"), "w", encoding="utf-8") as f:
+            f.write(markdown)
+        with open(os.path.join(output_dir, f"{stem}.json"), "w", encoding="utf-8") as f:
+            json.dump(section, f, ensure_ascii=False, indent=2)
+
+        is_answers = bool(section.get("is_answers"))
+        if is_answers:
+            items = [
+                item
+                for answer_block in section.get("answer_sections", [])
+                if isinstance(answer_block, dict)
+                for item in answer_block.get("answers", [])
+                if isinstance(item, dict)
+            ]
+        else:
+            items = [
+                item
+                for item in section.get("exercises", [])
+                if isinstance(item, dict)
+                and item.get("number") not in (None, "__preamble__")
+            ]
+            report["total_exercises"] += len(items)
+        report_section: ReportSection = {
+            "title": title,
+            "path": section_path,
+            "page_range": normalized_range,
+            "pages_total": 0,
+            "pages_cached": 0,
+            "exercise_count": len(items),
+            "numbers": [str(item.get("number") or "") for item in items],
+        }
+        if is_answers:
+            report_section["is_answers"] = True
+        report["sections"].append(report_section)
+
+    with open(os.path.join(output_dir, "report.json"), "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+    return report
+
+
 def print_summary(report: Report) -> None:
     """控制台摘要：总览 + 需要人工确认的章节（无习题 / 缺缓存页）。"""
     print(

@@ -11,7 +11,8 @@ import os
 from typing import Callable
 
 from .parse_md_exercises import split_exercises
-from .api import _prepare_source
+from .api import _prepare_source, extract_exercise_from_markdown
+from .answers import match_answers
 from .pipeline import ensure_output_dir_empty, run_pipeline
 from .public_schema import public_section_from_node
 from .postprocess import (
@@ -19,6 +20,7 @@ from .postprocess import (
     write_section_markdown,
     write_section_json,
     write_outputs,
+    write_public_outputs,
 )
 from .review import (
     DEFAULT_REVIEW_MODEL,
@@ -40,13 +42,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser = argparse.ArgumentParser(
         prog="exercise_extractor",
-        description="Exercise Extractor：从数学教材/习题集/试卷 PDF 或图片中提取习题",
+        description="Exercise Extractor：从数学教材/习题集/试卷 PDF、图片或 Markdown 中提取习题",
     )
     parser.add_argument(
         "--input",
         type=str,
         required=True,
-        help="Path to PDF/image；多张图片用逗号分隔",
+        help="Path to PDF/image/Markdown；多张图片用逗号分隔",
     )
     parser.add_argument(
         "--output", default="output", type=str, help="Path to output directory"
@@ -341,6 +343,9 @@ def _run_main(args: argparse.Namespace) -> None:
     if args.hash:
         print(compute_file_hash(args.input))
         return
+    if getattr(args, "source_type", None) == "markdown":
+        _run_markdown_cli(args)
+        return
     if not args.review:
         run_pipeline(args, write_outputs_enabled=True, print_summary_enabled=True)
         return
@@ -378,6 +383,50 @@ def _run_main(args: argparse.Namespace) -> None:
     print(f"输出目录: {os.path.abspath(args.output)}")
 
 
+def _run_markdown_cli(args: argparse.Namespace) -> None:
+    """Markdown CLI 分支：无 OCR 地切分、匹配答案并导出公共 section JSON。"""
+    with open(args.input, encoding="utf-8") as f:
+        markdown = f.read()
+    sections = list(
+        extract_exercise_from_markdown(
+            markdown,
+            doc_type=args.doc_type,
+            document_name=args.document_name,
+            title=args.document_name,
+        )
+    )
+
+    # 与 PDF 流程一致：答案 section 是数据源，不作为普通题目；依次回填到
+    # 当前 Markdown 内已识别出的习题 section。
+    exercise_sections = [section for section in sections if not section.get("is_answers")]
+    for answer_section in (section for section in sections if section.get("is_answers")):
+        exercise_sections = match_answers(exercise_sections, answer_section)
+    iterator = iter(exercise_sections)
+    sections = [next(iterator) if not section.get("is_answers") else section for section in sections]
+
+    if args.review:
+        if args.review_with_tools:
+            logger.warning("Markdown CLI 暂不执行 SymPy 审校，仅执行基础审校")
+        reviewed_sections: list[dict] = []
+        for section in sections:
+            if section.get("is_answers"):
+                reviewed_sections.append(section)
+                continue
+            reviewed_sections.append(
+                review_basic(
+                    section,
+                    base_url=args.review_base_url,
+                    api_key=args.review_api_key,
+                    model=args.review_model,
+                )
+            )
+        sections = reviewed_sections
+
+    report = write_public_outputs(sections, args.output)
+    print_summary(report)
+    print(f"输出目录: {os.path.abspath(args.output)}")
+
+
 def main() -> None:
     args = parse_args()
     if not args.hash and args.output:
@@ -386,6 +435,15 @@ def main() -> None:
         ensure_output_dir_empty(args.output)
     raw_sources = args.input
     raw_source_paths = [path.strip() for path in raw_sources.split(",")]
+    if len(raw_source_paths) == 1 and raw_source_paths[0].lower().endswith(".md"):
+        markdown_input = raw_source_paths[0]
+        if not os.path.isfile(markdown_input):
+            raise FileNotFoundError(2, "No such file or directory", markdown_input)
+        args.input = markdown_input
+        args.source_type = "markdown"
+        args.document_name = os.path.splitext(os.path.basename(markdown_input))[0]
+        _run_main(args)
+        return
     prepared_source, source_type, cleanup_path = _prepare_source(
         raw_sources, args.ocr_cache
     )

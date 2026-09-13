@@ -1564,6 +1564,45 @@ def test_cli() -> None:
         r.stdout[-100:],
     )
     os.unlink(hashpdf)
+    with tempfile.TemporaryDirectory() as tmp:
+        markdown_input = os.path.join(tmp, "习题.md")
+        output_dir = os.path.join(tmp, "output")
+        with open(markdown_input, "w", encoding="utf-8") as f:
+            f.write(
+                "## 一、填空。\n\n1. 求结果。\n\n## 答案:\n\n"
+                "一、填空题\n\n1. 0\n"
+            )
+        r = run_cli(
+            [
+                "--input",
+                markdown_input,
+                "--output",
+                output_dir,
+                "--doc_type",
+                "exercise_book",
+            ]
+        )
+        with open(os.path.join(output_dir, "report.json"), encoding="utf-8") as f:
+            report = json.load(f)
+        section_files = [
+            name
+            for name in os.listdir(output_dir)
+            if name.endswith(".json") and name != "report.json"
+        ]
+        payloads = []
+        for name in section_files:
+            with open(os.path.join(output_dir, name), encoding="utf-8") as f:
+                payloads.append(json.load(f))
+        question = next(item for item in payloads if not item.get("is_answers"))
+        answer = next(item for item in payloads if item.get("is_answers"))
+        check(
+            "CLI 支持 Markdown 输入并导出答案 section",
+            r.returncode == 0
+            and report["total_exercises"] == 1
+            and question["exercises"][0]["answer"] == "0"
+            and answer.get("is_answers") is True,
+            r.stderr[-300:] + r.stdout[-300:],
+        )
 
 
 def test_full_cache_pipeline() -> None:
