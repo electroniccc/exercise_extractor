@@ -16,6 +16,7 @@
 | `exercise_extractor/exercise_book.py` | 习题集专用流程：有目录按目录层级整节提取，无目录整本 OCR 后按小标题层级切块；题号切分/图注/表格与 textbook 共用 |
 | `exercise_extractor/exampaper.py` | 试卷专用流程：不走目录识别，整卷全量 OCR；按题型小节（选择题/填空题/简答题）切分，处理内嵌【答案】/【解】与文末答案区回填 |
 | `exercise_extractor/parse_md_exercises.py` | 核心切分器：把 markdown 文本按题号拆成结构化习题（与输入来源无关） |
+| `exercise_extractor/latex_text.py` | 基于 pylatexenc 将 LaTeX 转成 Unicode 纯文本，供标题归一和 bbox 文本匹配使用，不改写输出内容 |
 | `exercise_extractor/exercise_bbox.py` | 题目坐标映射：读取 PaddleOCR-VL 的 `page.json`，按页码、题号和题目文本把结构化习题匹配到 `parsing_res_list`，生成题目级 bbox |
 | `exercise_extractor/toc_detect.py` | 纯目录树判断：习题章节识别、前后置内容跳过、是否启用节尾搜索 |
 | `exercise_extractor/answers.py` | 习题答案章节：按小标题切分答案、与习题节点匹配（含题数校验） |
@@ -176,7 +177,7 @@ CLI 只审校习题节点；答案章节不再单独调用 LLM，因为习题 Ma
 开启 `--review` 时 CLI 默认输出 INFO 日志，可看到每个小节的开始/完成、模型轮次、
 SymPy 工具调用和质量警告；日志不会输出题目正文或 API key。
 
-依赖：`pymupdf`、`toc_forge`、`paddleocr`（PaddleOCRVL）、`cv2`、`numpy`、`Pillow`。目录识别需要 `ALIYUN_API_KEY` 环境变量；OCR 需要本地 vllm-server（默认 8080）。
+依赖：`pymupdf`、`toc_forge`、`paddleocr`（PaddleOCRVL）、`pylatexenc`、`cv2`、`numpy`、`Pillow`。目录识别需要 `ALIYUN_API_KEY` 环境变量；OCR 需要本地 vllm-server（默认 8080）。
 
 ## 测试
 

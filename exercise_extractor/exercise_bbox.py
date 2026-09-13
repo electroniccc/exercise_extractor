@@ -15,14 +15,17 @@ import os
 import re
 from typing import Any
 
+from .latex_text import latex_to_unicode
+
 logger = logging.getLogger(__name__)
 
 MIN_MATCH_SCORE = 0.35
 
 
 def _normalize_match_text(text: str) -> str:
-    text = re.sub(r"<[^>]+>|[#*_`$\\{}]", "", text)
-    return re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "", text).lower()
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = latex_to_unicode(text)
+    return "".join(character.lower() for character in text if character.isalnum())
 
 
 def _normalize_bbox(value: Any) -> list[float] | None:

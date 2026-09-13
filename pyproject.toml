@@ -13,6 +13,7 @@ dependencies = [
     "opencv-python",
     "Pillow",
     "paddleocr",
+    "pylatexenc>=2.10,<3",
     "minio",
     "openai",
     "sympy",

@@ -15,6 +15,8 @@
 import re
 from typing import TypedDict
 
+from .latex_text import latex_to_unicode
+
 
 class Exercise(TypedDict, total=False):
     """一道习题。number/content 必有；separator/section/pages 视情况存在；
@@ -209,7 +211,8 @@ def normalize_section(text: str) -> str:
     两者都应归一到 "习题7-10"。目录和 OCR 对区间题号使用的横线字符
     也可能不同（如 ``1–5`` 与 ``1-5``），统一为 ASCII 连字符。
     """
-    normalized = re.sub(r"[‐‑‒–—−－~～]", "-", text or "")
+    normalized = latex_to_unicode(text or "")
+    normalized = re.sub(r"[‐‑‒–—−－~～]", "-", normalized)
     return re.sub(r"[\s*^{}$]+", "", normalized)
 
 

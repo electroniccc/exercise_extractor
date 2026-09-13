@@ -48,6 +48,10 @@ def test_unit_boundaries() -> None:
         "目录与 OCR 区间横线归一化",
         normalize_section("习题 1–5") == normalize_section("习题1-5"),
     )
+    check(
+        "LaTeX 小节名与 Unicode 符号可归一比较",
+        normalize_section(r"$\alpha$ 习题") == normalize_section("α 习题"),
+    )
     exs = split_exercises("## 习题1-5\n1. 一\n2. 二\n")
     check(
         "区间横线差异不误删习题",
@@ -826,9 +830,22 @@ def test_api_contract() -> None:
 
 def test_exercise_bbox() -> None:
     """PaddleOCR parsing block 能映射为带页码的题目级 bbox。"""
-    from exercise_extractor.exercise_bbox import attach_exercise_bboxes
+    from exercise_extractor.exercise_bbox import (
+        _normalize_match_text,
+        attach_exercise_bboxes,
+    )
+    from exercise_extractor.latex_text import latex_to_unicode
     from exercise_extractor.ocr import _save_ocr_result
     from exercise_extractor.public_schema import public_section_from_node
+
+    check(
+        "pylatexenc 将 LaTeX 数学命令转换为 Unicode",
+        "α" in latex_to_unicode(r"$\alpha + \beta$"),
+    )
+    check(
+        "bbox 文本匹配统一 LaTeX 与 Unicode 数学符号",
+        _normalize_match_text(r"速度 $\alpha$") == _normalize_match_text("速度 α"),
+    )
 
     with tempfile.TemporaryDirectory() as cache_dir:
         raw_result = Mock()
