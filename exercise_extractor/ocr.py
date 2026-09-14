@@ -15,6 +15,7 @@ import toc_forge
 from paddleocr import PaddleOCRVL
 
 from . import exampaper, exercise_book
+from .llm_usage import LlmUsage, UsageCallback, report_usage
 from .extraction import SectionNode, build_section_tree, collect_pages_to_ocr
 from .ocr_cache import (
     clear_page_failure,
@@ -56,7 +57,11 @@ def _toc_llm_config(args: argparse.Namespace) -> tuple[str, str | None, str | No
     return model, api_base_url, api_key
 
 
-def build_sections(args: argparse.Namespace) -> list[SectionNode]:
+def build_sections(
+    args: argparse.Namespace,
+    *,
+    usage_callback: UsageCallback | None = None,
+) -> list[SectionNode]:
     """跑 toc_forge 目录识别，返回习题区域小节树。
 
     toc_forge 内部自带缓存（目录页 layout 检测、toc 树 vllm 结果），
@@ -115,6 +120,17 @@ def build_sections(args: argparse.Namespace) -> list[SectionNode]:
         api_key=toc_api_key,
         vllm_name=toc_vllm_name,
         **toc_engine_kwargs,
+    )
+    # toc_forge 0.3+ 已聚合本次目录识别所有实际 LLM 请求的 usage。目录
+    # 缓存命中时数字为零，仍报告该次操作，供宿主统一留痕。
+    report_usage(
+        usage_callback,
+        LlmUsage(
+            operation="toc_forge.vllm",
+            model=toc_vllm_name,
+            input_tokens=getattr(bookmark_result, "input_tokens", None),
+            output_tokens=getattr(bookmark_result, "output_tokens", None),
+        ),
     )
     # toc_forge 0.3+ 返回 BookmarkResult；这里直接取结构化目录树。
     toc_tree = bookmark_result.toc_tree

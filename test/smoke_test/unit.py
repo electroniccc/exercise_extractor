@@ -1115,6 +1115,26 @@ def test_llm_review_contract() -> None:
         basic_client.chat.completions.create.call_args.kwargs["extra_body"]
         == {"enable_thinking": False},
     )
+    usage_events = []
+    usage_client = Mock()
+    usage_client.chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=content, tool_calls=[]))],
+        usage=SimpleNamespace(prompt_tokens=12, completion_tokens=7),
+    )
+    review_markdown_basic(
+        content,
+        "测试书",
+        "习题1",
+        client=usage_client,
+        usage_callback=usage_events.append,
+    )
+    check(
+        "基础审校上报 token 用量",
+        len(usage_events) == 1
+        and usage_events[0].operation == "review.basic"
+        and usage_events[0].input_tokens == 12
+        and usage_events[0].output_tokens == 7,
+    )
     section = {
         "document_name": "测试书",
         "title": "习题1",

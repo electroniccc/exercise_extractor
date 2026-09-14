@@ -23,6 +23,7 @@ from .basic_review import (
     _remove_unexpected_answer_segments,
     _structure_is_preserved,
 )
+from ..llm_usage import UsageCallback, report_usage, usage_from_response
 
 logger = logging.getLogger(__name__)
 
@@ -209,6 +210,7 @@ def review_markdown_with_tools(
     client: Any = None,
     max_rounds: int = 5,
     strict: bool = False,
+    usage_callback: UsageCallback | None = None,
 ) -> str:
     """整节执行数学核验，最多 max_rounds 次模型对话，并按需调用 SymPy。"""
     if max_rounds < 1 or max_rounds > 5:
@@ -272,6 +274,14 @@ def review_markdown_with_tools(
                 len(messages),
             )
             response = _chat_json(llm, model, messages, tools=_SYMPY_TOOLS)
+            report_usage(
+                usage_callback,
+                usage_from_response(
+                    response,
+                    operation="review.math_with_tools",
+                    model=model,
+                ),
+            )
             choices = getattr(response, "choices", None) or []
             if not choices:
                 raise ValueError("LLM 没有返回 choices")

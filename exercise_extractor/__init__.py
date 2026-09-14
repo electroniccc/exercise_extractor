@@ -8,6 +8,7 @@ from .api import (
     reparse_exercises,
 )
 from .answers import match_answers
+from .llm_usage import LlmUsage
 from .review import review_basic
 
 __version__ = "0.1.0"
@@ -18,6 +19,7 @@ __all__ = [
     "extract_pdf",
     "reparse_exercises",
     "match_answers",
+    "LlmUsage",
     "review_basic",
     "__version__",
 ]

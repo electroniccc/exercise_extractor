@@ -9,6 +9,8 @@ import re
 from difflib import SequenceMatcher
 from typing import Any
 
+from ..llm_usage import UsageCallback, report_usage, usage_from_response
+
 logger = logging.getLogger(__name__)
 
 # 与 ocr.py 中 toc_forge.bookmark_pdf 使用同一套阿里云 OpenAI-compatible 地址；
@@ -464,6 +466,7 @@ def review_markdown_basic(
     api_key: str | None = None,
     model: str = DEFAULT_REVIEW_MODEL,
     client: Any = None,
+    usage_callback: UsageCallback | None = None,
 ) -> str:
     """按模板对整节执行基础 OCR/标点/LaTeX 审校。
 
@@ -497,7 +500,12 @@ def review_markdown_basic(
         },
         {"role": "user", "content": rendered_prompt},
     ]
-    raw_response = _message_content(_chat_text(llm, model, messages))
+    response = _chat_text(llm, model, messages)
+    report_usage(
+        usage_callback,
+        usage_from_response(response, operation="review.basic", model=model),
+    )
+    raw_response = _message_content(response)
     revised = (raw_response or "").strip()
     if revised.startswith("```") and revised.endswith("```"):
         revised = re.sub(r"^```(?:markdown|md)?\s*|\s*```$", "", revised).strip()
@@ -525,6 +533,7 @@ def review_basic(
     api_key: str | None = None,
     model: str = DEFAULT_REVIEW_MODEL,
     client: Any = None,
+    usage_callback: UsageCallback | None = None,
 ) -> dict[str, Any]:
     """对一个公共 section JSON 做基础审校并返回新的 section JSON。
 
@@ -558,6 +567,7 @@ def review_basic(
         api_key=api_key,
         model=model,
         client=client,
+        usage_callback=usage_callback,
     ).strip()
     revised, removed_answers = _remove_unexpected_answer_segments(
         source, raw_revised
@@ -654,6 +664,7 @@ def review_basic_exercise(
     api_key: str | None = None,
     model: str = DEFAULT_REVIEW_MODEL,
     client: Any = None,
+    usage_callback: UsageCallback | None = None,
 ) -> list[dict[str, Any]]:
     """审校 section 中指定下标的题目，返回对应 Exercise JSON 列表。
 
@@ -696,6 +707,7 @@ def review_basic_exercise(
         api_key=api_key,
         model=model,
         client=client,
+        usage_callback=usage_callback,
     ).strip()
     revised, _ = _remove_unexpected_answer_segments(source, revised)
     items = [

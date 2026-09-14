@@ -54,7 +54,10 @@ def run_pipeline(
     if args.output:
         ensure_output_dir_empty(args.output)
 
-    exercise_sections = build_sections(args)
+    exercise_sections = build_sections(
+        args,
+        usage_callback=getattr(args, "llm_usage_callback", None),
+    )
     file_hash = compute_file_hash(args.input)
     logger.info(
         "filename: %s, hash: %s, output: %s",
@@ -133,7 +136,10 @@ def iter_sections(
         ensure_output_dir_empty(args.output)
         os.makedirs(args.output, exist_ok=True)
 
-    exercise_sections = build_sections(args)
+    exercise_sections = build_sections(
+        args,
+        usage_callback=getattr(args, "llm_usage_callback", None),
+    )
     file_hash = compute_file_hash(args.input)
     logger.info("filename: %s, hash: %s", os.path.basename(args.input), file_hash)
     markdown_path = os.path.join(

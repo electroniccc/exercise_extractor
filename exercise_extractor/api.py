@@ -14,6 +14,8 @@ from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Optional
 
+from .llm_usage import UsageCallback
+
 import pymupdf
 
 from . import answers, exampaper
@@ -351,6 +353,7 @@ def extract_exercise(
     oss_use_ssl: bool = False,
     oss_public_base_url: Optional[str] = None,
     write_outputs: bool = False,
+    llm_usage_callback: UsageCallback | None = None,
 ) -> Iterator[dict]:
     """提取 PDF 或一张/多张图片中的习题，返回公共 section 迭代器。
 
@@ -380,6 +383,7 @@ def extract_exercise(
     ``children`` 的公共 JSON object。section 的 ``path`` 使用 ``/`` 记录
     其在目录树中的完整路径；答案节点和无编号习题节点不会 yield。
     参数校验（文件存在、输入类型、model_dir）在调用时立即执行。
+    llm_usage_callback：每次目录识别等 LLM 请求完成后接收 token 用量事件。
     """
     source_paths = (
         [path.strip() for path in source.split(",")]
@@ -420,6 +424,7 @@ def extract_exercise(
         oss_public_base_url=oss_public_base_url,
         vl_model=vl_rec_api_model_name,
         doc_type=doc_type,
+        llm_usage_callback=llm_usage_callback,
     )
     internal_sections = iter_sections(args, write_outputs_enabled=write_outputs)
     document_name = args.document_name
