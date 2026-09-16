@@ -9,6 +9,7 @@
 import logging
 import os
 import re
+import hashlib
 from dataclasses import dataclass
 from typing import Optional
 
@@ -76,6 +77,13 @@ def _object_key(cfg: OssConfig, local_path: str, markdown_path: str) -> str:
     """对象键：相对 markdown 缓存根目录的路径（如 page_3/imgs/x.jpg），
     加上配置的 prefix，保证不同页面同名图片不互相覆盖。"""
     rel = os.path.relpath(local_path, markdown_path).replace(os.sep, "/")
+    # markdown_path belongs to a file-hash cache namespace.  Preserve this
+    # namespace in object storage so identical page/image filenames from two
+    # documents never overwrite each other.
+    document_namespace = hashlib.sha256(
+        os.path.abspath(markdown_path).encode("utf-8")
+    ).hexdigest()[:24]
+    rel = f"documents/{document_namespace}/{rel}"
     if cfg.prefix:
         return f"{cfg.prefix.rstrip('/')}/{rel}"
     return rel
