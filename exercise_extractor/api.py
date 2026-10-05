@@ -201,7 +201,8 @@ def extract_exercise_from_markdown(
     其后内容会作为 ``is_answers: true`` 的答案 section 单独返回。没有标题时，
     全部内容归入 ``title``。试卷模式
     则沿用 PDF 试卷流程，按“一、选择题 / 二、填空题 / 三、解答题”等题型标题
-    返回独立 section。Markdown 内若包含 ``<!-- page: N -->``，会保留习题页码；
+    或英文 ``Section A/B`` 返回独立 section；无分节的英文卷返回 Questions section。
+    Markdown 内若包含 ``<!-- page: N -->``，会保留习题页码；
     纯 Markdown 没有 OCR 原始 JSON，因此每题 ``bbox`` 固定为空数组。
 
     此接口与 ``extract_exercise`` 一样返回迭代器，但不需要模型、OCR 服务或

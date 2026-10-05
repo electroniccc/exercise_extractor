@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import tempfile
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -1076,6 +1077,91 @@ def test_ocr_cache_concurrency() -> None:
         check("JSON 写入失败不发布 Markdown 半成品", failed_atomically)
 
 
+def test_declared_blank_pdf_page() -> None:
+    """试卷明确标注的空白页不送入 OCR，也不触发空 Markdown 重试。"""
+    from unittest.mock import patch
+
+    import pymupdf
+
+    from exercise_extractor.ocr import ocr_pages
+    from exercise_extractor.ocr_cache import page_cache_is_ready
+
+    with tempfile.TemporaryDirectory() as cache_dir:
+        pdf_path = os.path.join(cache_dir, "paper.pdf")
+        doc = pymupdf.open()
+        doc.new_page().insert_text((72, 72), "BLANK PAGE")
+        doc.new_page().insert_text((72, 72), "1 Find the value of x.")
+        doc.save(pdf_path)
+        doc.close()
+        markdown_path = os.path.join(cache_dir, "markdown")
+        args = SimpleNamespace(input=pdf_path, vl_model="PaddleOCR-VL")
+        sections = [{"has_exercise": True, "exercise_page_range": [1, 3]}]
+
+        class Result:
+            def save_to_markdown(self, *, save_path: str, **_kwargs) -> None:
+                with open(save_path, "w", encoding="utf-8") as stream:
+                    stream.write("1 Find the value of x.")
+
+            def save_to_json(self, *, save_path: str, **_kwargs) -> None:
+                with open(save_path, "w", encoding="utf-8") as stream:
+                    json.dump({"parsing_res_list": []}, stream)
+
+        pipeline = Mock()
+        pipeline.predict_iter.side_effect = lambda images: iter(Result() for _ in images)
+        with patch("exercise_extractor.ocr.image_from_page", return_value=object()):
+            ocr_pages(args, sections, markdown_path, pipeline)
+        check(
+            "明确空白页跳过 OCR 并发布完整缓存",
+            pipeline.predict_iter.call_count == 1
+            and len(pipeline.predict_iter.call_args.args[0]) == 1
+            and page_cache_is_ready(markdown_path, 1)
+            and page_cache_is_ready(markdown_path, 2),
+        )
+
+
+def test_ocr_page_batches() -> None:
+    """较长试卷分批转图，限制一次交给 PaddleOCR 的页数。"""
+    from unittest.mock import patch
+
+    import pymupdf
+
+    from exercise_extractor.ocr import ocr_pages
+    from exercise_extractor.ocr_cache import page_cache_is_ready
+
+    with tempfile.TemporaryDirectory() as cache_dir:
+        pdf_path = os.path.join(cache_dir, "paper.pdf")
+        doc = pymupdf.open()
+        for _ in range(9):
+            doc.new_page()
+        doc.save(pdf_path)
+        doc.close()
+        markdown_path = os.path.join(cache_dir, "markdown")
+        args = SimpleNamespace(input=pdf_path, vl_model="PaddleOCR-VL")
+        sections = [{"has_exercise": True, "exercise_page_range": [1, 10]}]
+
+        class Result:
+            def save_to_markdown(self, *, save_path: str, **_kwargs) -> None:
+                with open(save_path, "w", encoding="utf-8") as stream:
+                    stream.write("1. Example")
+
+            def save_to_json(self, *, save_path: str, **_kwargs) -> None:
+                with open(save_path, "w", encoding="utf-8") as stream:
+                    json.dump({"parsing_res_list": []}, stream)
+
+        sizes: list[int] = []
+
+        def predict(images):
+            sizes.append(len(images))
+            return iter(Result() for _ in images)
+
+        pipeline = Mock()
+        pipeline.predict_iter.side_effect = predict
+        with patch("exercise_extractor.ocr.image_from_page", return_value=object()):
+            ocr_pages(args, sections, markdown_path, pipeline)
+        check("OCR 长卷四页一批", sizes == [4, 4, 1]
+              and all(page_cache_is_ready(markdown_path, p) for p in range(1, 10)),
+              str(sizes))
+
 def test_llm_review_contract() -> None:
     """LLM 审校接口只改文本并按题目追加状态，工具轮次可控。"""
     from exercise_extractor.review import (
@@ -1539,7 +1625,10 @@ def test_oss_image_upload() -> None:
         check(
             "OSS 上传并替换 URL",
             uploaded == 1
-            and "http://127.0.0.1:9000/b/imgs/page_1/imgs/x.jpg" in new_content
+            and re.search(
+                r"http://127\.0\.0\.1:9000/b/imgs/documents/[0-9a-f]{24}/page_1/imgs/x\.jpg",
+                new_content,
+            )
             and 'src="http://cdn/x.png"' in new_content,
             new_content,
         )

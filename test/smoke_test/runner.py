@@ -34,6 +34,8 @@ def main() -> None:
     unit.test_api_contract()
     unit.test_exercise_bbox()
     unit.test_ocr_cache_concurrency()
+    unit.test_declared_blank_pdf_page()
+    unit.test_ocr_page_batches()
     unit.test_llm_review_contract()
     unit.test_review_removes_supplemented_answers()
     unit.test_review_keeps_partial_tool_result()

@@ -6,6 +6,8 @@
 - 按“题型小节”切分：识别“一、选择题”“二、填空题”“三、解答题”这类
   小节（兼容早年“二、（本题满分8分）”这种没有题型词的写法），每道题
   打上 question_type（标准英文枚举，见 QUESTION_TYPES）；
+- 英文 A-level 卷按 Section A/B 分组；无 Section 的卷按 Questions 分组，
+  识别 Cambridge 独立题号和 AQA ``0 1``/``0 1 . 1`` 题号；
 - 题号支持两种形态：连续编号（1. 2. 3. …，近十年真题）与节内
   （1）（2）编号（早年真题的填空题/选择题）；
 - 场景处理：
@@ -149,6 +151,26 @@ def _repair_truncated_numbers(exercises: list[Exercise]) -> None:
 # 通用“标题还原”规则看到下一个标题就停止扫描，连续标题时还原不了。
 # 试卷题型小节是已知的题目区域，直接把“# + 数字 + 分隔符”降级为普通题号行。
 _HEADING_PREFIX_RE = re.compile(r"(?m)^#{1,6}\s*")
+_EN_SECTION_RE = re.compile(r"^\s*(?:#{1,6}\s*)?Section\s+([A-Z])\s*$", re.I)
+_EN_PAGE_CODE_RE = re.compile(
+    r"^(?:\d{4}/\d{1,2}/[A-Z]/[A-Z]/\d{2}|IB/M/\w+|"
+    r"\d{4}/\d{1,2}/\d{2}/[A-Z]\d{2}|CLES\s+\d{4}|"
+    r"(?:[A-Z]/)?(?:Jun|May|Nov)\d{2}/\d{4}/\d|©\s*UCLES)", re.I
+)
+_EN_FURNITURE_RE = re.compile(
+    r"^(?:Do not write(?: outside the box)?|outside the(?:\s+box)?|box|"
+    r"Turn over(?: for the next question)?|\[Turn over\]|\[Unabel\]|"
+    r"DO NOT WRITE ON THIS PAGE ANSWER IN THE SPACES PROVIDED|"
+    r"20\d{2}|二〇二四年|\(\d{2}\)|\*\d+\*|"
+    r"There are no questions printed on this page)\s*$",
+    re.I,
+)
+_EN_SPACED_NUMBER_RE = re.compile(
+    r"^\s*(?:#{1,6}\s*)?([0-3])\s+([0-9])(?:\s*\.\s*(\d+))?\s*(.*)$"
+)
+_EN_NUMBER_RE = re.compile(
+    r"^\s*(?:#{1,6}\s*)?(\d{1,2})(?:[.)](?!\d))?(?=\s|$)\s*(.*)$"
+)
 
 
 class TypeSection(TypedDict, total=False):
@@ -160,6 +182,84 @@ class TypeSection(TypedDict, total=False):
     question_type: str  # 标准英文枚举（single_choice/multiple_choice/…）
     start_page: int | None  # 题型标题所在页（页标记在标题前时保留）
     lines: list[str]    # 小节正文（不含标题行）
+    english_paper: bool  # 英文 A-level 卷面采用独立的顶层题号切分
+
+
+def _looks_english_paper(content: str) -> bool:
+    """识别英文试卷封面、分节或无封面的连续英文题干。"""
+    visible = re.sub(r"<[^>]+>", "", content)
+    if (
+        any(_EN_SECTION_RE.match(line) for line in visible.splitlines())
+        or re.search(r"(?i)\bA[ -]level\b", visible)
+        or re.search(r"(?i)Cambridge International AS\s*&\s*A Level", visible)
+    ):
+        return True
+    # 截取页可能没有封面；模型还会把页码和考试代码都省掉。只看可见
+    # 的英文题干，避免绝对图片路径里的 ``a-level`` 意外触发识别。
+    if re.search(r"[\u4e00-\u9fff]", visible):
+        return False
+    prose_lines = sum(
+        bool(re.search(r"\b(?:The|Express|Hence|Find|Calculate|Determine|Describe)\b",
+                       line, re.I))
+        for line in visible.splitlines()
+    )
+    return prose_lines >= 3 and any(
+        _english_question_start(line) for line in visible.splitlines()
+    )
+
+
+def _split_english_type_sections(content: str) -> list[TypeSection]:
+    """按 Section A/B 分块；无 Section 的 Cambridge 卷合成 Questions。"""
+    sections: list[TypeSection] = []
+    current: TypeSection | None = None
+    leading: list[str] = []
+    current_page: int | None = None
+
+    for line in content.split("\n"):
+        page = re.match(r"^\s*<!--\s*page:\s*(\d+)\s*-->\s*$", line)
+        if page:
+            current_page = int(page.group(1))
+            if current is not None:
+                current["lines"].append(line)
+            else:
+                leading.append(line)
+            continue
+        heading = _EN_SECTION_RE.match(line)
+        if heading:
+            if current is not None:
+                sections.append(current)
+            title = f"Section {heading.group(1).upper()}"
+            current = {
+                "index": len(sections) + 1,
+                "title": title,
+                "section_key": title,
+                "question_type": "short_answer",
+                "start_page": current_page,
+                "english_paper": True,
+                "lines": [],
+            }
+            continue
+        if current is None:
+            leading.append(line)
+        else:
+            current["lines"].append(line)
+    if current is not None:
+        sections.append(current)
+    if not sections:
+        sections.append({
+            "index": 1,
+            "title": "Questions",
+            "section_key": "Questions",
+            "question_type": "short_answer",
+            "start_page": None,
+            "english_paper": True,
+            "lines": leading,
+        })
+    for section in sections:
+        if re.search(r"(?i)(?:four responses|select the best response|multiple.choice)",
+                     "\n".join(section["lines"][:20])):
+            section["question_type"] = "single_choice"
+    return sections
 
 
 def _strip_heading(line: str) -> str:
@@ -310,6 +410,8 @@ def split_type_sections(
     in_tail=True 时不再识别答案区边界：答案区里“## 二、填空题答案”这类
     小节标题虽然含“答案”，但只是答案区自己的题型小节，不是新的答案区。
     """
+    if not in_tail and _looks_english_paper(content):
+        return _split_english_type_sections(content), None
     sections: list[TypeSection] = []
     tail_lines: list[str] | None = None
     current: TypeSection | None = None
@@ -575,6 +677,177 @@ def _split_short_answer_exercises(
     return items
 
 
+def _english_question_start(line: str) -> tuple[int, str] | None:
+    """识别 Cambridge 顶层题号与 AQA 的 ``0 1``，排除 ``01.2`` 小问。"""
+    spaced = _EN_SPACED_NUMBER_RE.match(line)
+    if spaced:
+        number = int(spaced.group(1) + spaced.group(2))
+        if spaced.group(3) is not None:
+            # AQA 有时省去独立的 ``0 3``，直接以 ``0 3 . 1`` 开题。
+            return (number, line.strip()) if spaced.group(3) == "1" else None
+        if 1 <= number <= 99:
+            return number, spaced.group(4).strip()
+    plain = _EN_NUMBER_RE.match(line)
+    if plain:
+        number = int(plain.group(1))
+        body = plain.group(2).strip()
+        if 1 <= number <= 99 and not re.match(r"(?i)^hours?\b", body):
+            return number, body
+    return None
+
+
+def _english_page_starts_unnumbered_question(content: str) -> bool:
+    """判断漏题号的页是否从新的英文题干开始，而非 (b) 等跨页小问。"""
+    visible = re.sub(r"<[^>]+>", "", content).strip()
+    lines = [line.strip() for line in visible.splitlines() if line.strip()]
+    if not lines or re.match(r"^\([a-z]\)", lines[0], re.I):
+        return False
+    words = re.findall(r"[A-Za-z]{3,}", visible)
+    return len(words) >= 8 and bool(re.match(
+        r"(?i)^(?:The|In|A|An|Find|Calculate|Determine|Describe|"
+        r"Show|Prove|Express)\b",
+        lines[0],
+    ))
+
+
+def _split_english_numbered_exercises(section: TypeSection) -> list[Exercise]:
+    """英文卷面按递增顶层题号切分，保留字母/小数小问。"""
+    items: list[Exercise] = []
+    current: Exercise | None = None
+    page = section.get("start_page")
+    start_page: int | None = None
+    end_page: int | None = None
+    previous: int | None = None
+    line_on_page = 0
+    page_number_skipped = False
+    blank_page = False
+    page_breaks: list[tuple[int, int]] = []
+    lines = section["lines"]
+
+    def flush() -> None:
+        if current is None:
+            return
+        current["content"] = current["content"].strip()
+        if start_page is not None and end_page is not None:
+            current["pages"] = [start_page, end_page]
+        items.append(current)
+
+    for index, line in enumerate(lines):
+        page_match = re.match(r"^\s*<!--\s*page:\s*(\d+)\s*-->\s*$", line)
+        if page_match:
+            page = int(page_match.group(1))
+            if current is not None:
+                page_breaks.append((page, len(current["content"])))
+            line_on_page = 0
+            page_number_skipped = False
+            blank_page = False
+            continue
+        line_on_page += 1
+        stripped = _strip_heading(line)
+        if stripped.lower() in (
+            "there are no questions printed on this page", "blank page"
+        ):
+            blank_page = True
+        if blank_page:
+            continue
+        if re.match(r"(?i)^(?:Additional page|Permission to reproduce)\b", stripped):
+            break
+        following = next(
+            (_strip_heading(next_line) for next_line in lines[index + 1:index + 7]
+             if _strip_heading(next_line)),
+            "",
+        )
+        if (
+            page is not None and line_on_page <= 2
+            and not page_number_skipped and stripped == str(page)
+        ):
+            page_number_skipped = True
+            continue
+        if _EN_FURNITURE_RE.match(stripped) or _EN_PAGE_CODE_RE.match(stripped) or (
+            stripped.isdigit() and _EN_PAGE_CODE_RE.match(following)
+        ):
+            continue
+        candidate = _english_question_start(line)
+        if candidate:
+            number, body = candidate
+            if body and not re.search(r"[A-Za-z]{2,}", body) and re.fullmatch(
+                r"[-+−=÷×/ ]+", body
+            ):
+                candidate = None
+            # AQA 的选项可能只是独立一行数字（如 ``2``）。真正的裸题号
+            # 后面通常接题干文字或图片，数字选项后面则仍是数值。
+            if candidate and not body and not (
+                re.search(r"[A-Za-z]{2,}", following)
+                or following.startswith("<img")
+                or (line_on_page <= 8 and (current is None or end_page != page))
+            ):
+                candidate = None
+        if candidate:
+            number, body = candidate
+            allowed_first = section["title"] != "Questions" or number == 1
+            gap = number - previous if previous is not None else 0
+            missing_pages: list[tuple[int, int]] = []
+            if current is not None and 2 <= gap <= 4 and page is not None:
+                boundaries = [
+                    (start_page, 0), *page_breaks,
+                    (page + 1, len(current["content"])),
+                ]
+                for (break_page, offset), (_, next_offset) in zip(
+                    boundaries, boundaries[1:]
+                ):
+                    if (
+                        break_page is not None
+                        and start_page is not None
+                        and start_page < break_page < page
+                        and _english_page_starts_unnumbered_question(
+                            current["content"][offset:next_offset]
+                        )
+                    ):
+                        missing_pages.append((break_page, offset))
+            gap_recovered = gap >= 2 and len(missing_pages) == gap - 1
+            if (previous is None and allowed_first) or (
+                previous is not None and (gap == 1 or gap_recovered or gap == 2)
+            ):
+                if gap_recovered and current is not None and previous is not None:
+                    old_content = current["content"]
+                    starts = [(start_page, 0), *missing_pages]
+                    page_bounds = [*starts, (page, len(old_content))]
+                    for offset_index, (segment_page, segment_offset) in enumerate(starts):
+                        next_page, next_offset = page_bounds[offset_index + 1]
+                        current = {
+                            "number": str(previous + offset_index),
+                            "separator": ".",
+                            "content": old_content[segment_offset:next_offset],
+                        }
+                        start_page = segment_page
+                        end_page = segment_page
+                        for (part_page, part_offset), (_, part_end) in zip(
+                            boundaries, boundaries[1:]
+                        ):
+                            if (
+                                part_page is not None
+                                and segment_page is not None
+                                and segment_page <= part_page < next_page
+                                and old_content[part_offset:part_end].strip()
+                            ):
+                                end_page = part_page
+                        flush()
+                else:
+                    flush()
+                current = {"number": str(number), "separator": ".", "content": body}
+                previous = number
+                start_page = page
+                end_page = page
+                page_breaks = []
+                continue
+        if current is not None:
+            current["content"] += "\n" + line
+            if stripped:
+                end_page = page
+    flush()
+    return items
+
+
 def _split_section_exercises(section: TypeSection) -> list[Exercise]:
     """把一个题型小节切成习题，并统一补上 question_type/section 字段。
 
@@ -588,8 +861,16 @@ def _split_section_exercises(section: TypeSection) -> list[Exercise]:
         return []
     chunk = demote_exercise_headings(chunk)
     chunk = _HEADING_PREFIX_RE.sub("", chunk)
-    chunk, figures = extract_figures(chunk)
-    if section.get("parenthesized_top_level"):
+    # A-level 图表往往没有中文式图注。保留图片所在行，按页和
+    # 题号直接归入题干；通用图注抽取会丢弃无图注的图片。
+    figures: dict[str, list[str]] = {}
+    if not section.get("english_paper"):
+        chunk, figures = extract_figures(chunk)
+    if section.get("english_paper"):
+        english_section = dict(section)
+        english_section["lines"] = chunk.split("\n")
+        exercises = _split_english_numbered_exercises(english_section)
+    elif section.get("parenthesized_top_level"):
         chunk = _parenthesized_numbers_to_plain(chunk)
         exercises = _split_short_answer_exercises(
             chunk, section.get("start_page")
@@ -612,7 +893,7 @@ def _split_section_exercises(section: TypeSection) -> list[Exercise]:
         exercises = _split_short_answer_exercises(
             chunk, section.get("start_page")
         )
-    if not exercises:
+    if not exercises and not section.get("english_paper"):
         pages = _section_pages(section["lines"])
         if not pages and section.get("start_page") is not None:
             pages = [section["start_page"], section["start_page"]]
@@ -640,6 +921,10 @@ def _split_section_exercises(section: TypeSection) -> list[Exercise]:
     convert_exercise_tables(exercises)
     for item, proof_solution in zip(exercises, proof_solution_flags):
         item["question_type"] = section["question_type"]
+        if section.get("english_paper") and re.search(
+            r"(?i)\bCircle your answer\b", item.get("content", "")
+        ):
+            item["question_type"] = "single_choice"
         if (
             section["question_type"] == "short_answer"
             and proof_solution

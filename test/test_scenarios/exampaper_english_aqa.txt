@@ -1,0 +1,37 @@
+<!-- page: 1 -->
+A-level PHYSICS Paper 1
+Instructions
+Answer all questions.
+<!-- page: 2 -->
+Section A
+Answer all questions in this section.
+0 1
+The neutral lambda particle is a baryon.
+0 1 . 1
+Deduce its quark structure. [1 mark]
+0 1 . 2
+State which interaction is involved. [2 marks]
+<!-- page: 4 -->
+0 2
+A spring is stretched by a force.
+0 2 . 1
+Calculate the extension. [2 marks]
+<!-- page: 9 -->
+0 3 . 1
+State the conservation law that applies. [2 marks]
+<!-- page: 24 -->
+Section B
+Each question is followed by four responses, A, B, C and D.
+For each question select the best response.
+0 7
+Which combination gives the required distance? [1 mark]
+A 10 μm s−1 and 100 s
+B 10 km s−1 and 0.01 μs
+C 1 nm s−1 and 1 Gs
+D 0.1 Mm s−1 and 100 ns
+0 8
+What is a reasonable estimate of the speed? [1 mark]
+A 2 m s−1
+B 4 m s−1
+C 8 m s−1
+D 10 m s−1

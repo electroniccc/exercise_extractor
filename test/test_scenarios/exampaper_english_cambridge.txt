@@ -1,0 +1,26 @@
+<!-- page: 1 -->
+Cambridge International AS & A Level
+MATHEMATICS
+Paper 1 Pure Mathematics 1
+1 hour 50 minutes
+INSTRUCTIONS
+Answer all questions.
+<!-- page: 2 -->
+2
+9709/11/M/J/24
+## 1
+2 -
+(a) Express the expression in the required form. [2]
+(b) Hence find the exact solutions. [3]
+<!-- page: 3 -->
+3
+9709/11/M/J/24
+## 2
+y
+The diagram shows two curves.
+(a) Describe two transformations. [4]
+(b) Find f(x). [2]
+<!-- page: 4 -->
+## 3
+The coefficient of x³ is 160.
+(a) Find the constant a. [2]

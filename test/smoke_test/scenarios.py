@@ -488,6 +488,108 @@ def test_exampaper_duplicate_number_solution() -> None:
         exs[2]["content"] == "求 $y$。"
         and exs[2]["solution_steps"] == "由题意得 $y=2$。",
     )
+def test_exampaper_english_cambridge() -> None:
+    """无题型小节的 Cambridge 卷按顶层题号切分。"""
+    from exercise_extractor import extract_exercise_from_markdown
+
+    sections = list(extract_exercise_from_markdown(
+        load_scenario("exampaper_english_cambridge.txt"),
+        doc_type="exampaper", document_name="9709/11",
+    ))
+    check("Cambridge 英文卷产生单个 section", len(sections) == 1, str(sections))
+    if not sections:
+        return
+    items = sections[0]["exercises"]
+    check("Cambridge 顶层题号和页码", [e["number"] for e in items] == ["1", "2", "3"]
+          and [e.get("pages") for e in items] == [[2, 2], [3, 3], [4, 4]], str(items))
+    check("Cambridge 小问保留在题内", "(a)" in items[0]["content"]
+          and "(b)" in items[0]["content"]
+          and "9709/11/M/J/24" not in items[0]["content"], str(items[0]))
+
+
+def test_exampaper_english_aqa() -> None:
+    """AQA 物理卷按 Section 分组，零填充题号的小问不拆题。"""
+    from exercise_extractor import extract_exercise_from_markdown
+
+    sections = list(extract_exercise_from_markdown(
+        load_scenario("exampaper_english_aqa.txt"),
+        doc_type="exampaper", document_name="7408/1",
+    ))
+    check("AQA 英文 Section A/B", [s["title"] for s in sections] == ["Section A", "Section B"], str(sections))
+    if len(sections) != 2:
+        return
+    a, b = [s["exercises"] for s in sections]
+    check("AQA 结构题保留小问", [e["number"] for e in a] == ["1", "2", "3"]
+          and "0 1 . 2" in a[0]["content"] and a[0]["pages"] == [2, 2]
+          and a[2]["content"].startswith("0 3 . 1"), str(a))
+    check("AQA Section B 为单选题", [e["number"] for e in b] == ["7", "8"]
+          and all(e["question_type"] == "single_choice" for e in b)
+          and b[0]["pages"] == [24, 24], str(b))
+
+
+def test_exampaper_english_aqa_math() -> None:
+    """AQA 数学的裸题号、单独数字选项和逐题选择分类。"""
+    from exercise_extractor import extract_exercise_from_markdown
+
+    sections = list(extract_exercise_from_markdown(
+        load_scenario("exampaper_english_aqa_math.txt"),
+        doc_type="exampaper", document_name="7357/1",
+    ))
+    check("AQA 数学无 Section 仍按题提取", len(sections) == 1, str(sections))
+    if not sections:
+        return
+    items = sections[0]["exercises"]
+    check("AQA 数学独立选项不切题", [e["number"] for e in items] == ["1", "2", "3"]
+          and "\n2\n128" in items[0]["content"]
+          and "2.5" in items[1]["content"]
+          and items[2]["content"].startswith("The curve"), str(items))
+    check("AQA 数学逐题识别单选", [e["question_type"] for e in items]
+          == ["single_choice", "single_choice", "short_answer"], str(items))
+
+
+def test_exampaper_english_ocr_gap() -> None:
+    """真实 OCR 漏掉整页 Cambridge 题号时，按页码和后续题号补回。"""
+    from exercise_extractor import extract_exercise_from_markdown
+
+    sections = list(extract_exercise_from_markdown(
+        load_scenario("exampaper_english_ocr_gap.txt"),
+        doc_type="exampaper", document_name="9709/11",
+    ))
+    check("OCR 英文页无封面仍能识别", len(sections) == 1, str(sections))
+    if not sections:
+        return
+    items = sections[0]["exercises"]
+    check("OCR 缺号页恢复题号", [e["number"] for e in items] == ["1", "2", "3"]
+          and [e.get("pages") for e in items] == [[1, 1], [2, 2], [3, 3]], str(items))
+    check("OCR 缺号页题干归属", "The diagram shows" in items[1]["content"]
+          and "The diagram shows" not in items[0]["content"]
+          and "The coefficient" in items[2]["content"]
+          and 'src="imgs/diagram.jpg"' in items[1]["content"]
+          and 'src="imgs/blank.jpg"' not in items[2]["content"], str(items))
+
+
+def test_exampaper_english_ocr_multi_gap() -> None:
+    """整卷 OCR 连续漏号、跨页小问和卷末附加页。"""
+    from exercise_extractor import extract_exercise_from_markdown
+
+    sections = list(extract_exercise_from_markdown(
+        load_scenario("exampaper_english_ocr_multi_gap.txt"),
+        doc_type="exampaper", document_name="9709/11",
+    ))
+    check("OCR 整卷英文 section", len(sections) == 1, str(sections))
+    if not sections:
+        return
+    items = sections[0]["exercises"]
+    check("OCR 连续漏号恢复 1-11", [e["number"] for e in items]
+          == [str(i) for i in range(1, 12)], str(items))
+    if len(items) != 11:
+        return
+    check("OCR 跨页和卷末边界", [e["pages"] for e in items[4:]]
+          == [[6, 6], [7, 7], [8, 8], [10, 11], [12, 12], [14, 14], [16, 17]]
+          and "Additional page" not in items[-1]["content"]
+          and "[Unabel]" not in items[6]["content"], str(items[4:]))
+
+
 def test_figure_group() -> None:
     """配图按图注归组（含 (a)(b) 子标签）。"""
     from exercise_extractor.extraction import extract_figures
@@ -513,6 +615,11 @@ SCENARIO_TESTS = {
     "exampaper_single_multi_choice.txt": test_exampaper_single_multi_choice,
     "exampaper_table_tail.txt": test_exampaper_table_tail,
     "exampaper_duplicate_number_solution.txt": test_exampaper_duplicate_number_solution,
+    "exampaper_english_cambridge.txt": test_exampaper_english_cambridge,
+    "exampaper_english_aqa.txt": test_exampaper_english_aqa,
+    "exampaper_english_aqa_math.txt": test_exampaper_english_aqa_math,
+    "exampaper_english_ocr_gap.txt": test_exampaper_english_ocr_gap,
+    "exampaper_english_ocr_multi_gap.txt": test_exampaper_english_ocr_multi_gap,
     "html_figure_group.txt": test_figure_group,
 }
 

@@ -7,8 +7,10 @@
 """
 
 import argparse
+import json
 import logging
 import os
+import re
 
 import pymupdf
 import toc_forge
@@ -31,6 +33,7 @@ from .utils import fix_markdown_block_latex, image_from_page
 logger = logging.getLogger(__name__)
 
 DEFAULT_TOC_VLLM_NAME = "qwen3.7-flash"
+OCR_PAGE_BATCH_SIZE = 4
 
 
 def _toc_ocr_kwargs(args: argparse.Namespace) -> dict[str, str]:
@@ -150,8 +153,8 @@ def create_ocr_pipeline(args: argparse.Namespace) -> PaddleOCRVL:
 
     构造只做配置校验，不连接服务；真正的推理在 ocr_pages 里。
     PaddleOCR-VL 的 genai 客户端默认把批大小设为 8192（整批页面合成一批），
-    结果收集要等整批全部完成才输出；这里改为 8，让 predict_iter 按
-    8 个一批实时产出。引擎参数（backend/server_url/并发数/模型名）由调用方
+    结果收集要等整批全部完成才输出；这里改为 8，ocr_pages 再按
+    OCR_PAGE_BATCH_SIZE 分批送入，限制长卷的内存峰值。引擎参数由调用方
     通过 args 传入，CLI 与对外 API 共用同一套配置。
     """
     ocr_engine_kwargs = {}
@@ -205,6 +208,36 @@ def _save_ocr_result(
         discard_page_staging(staging_dir)
 
 
+def _page_declared_blank(page) -> bool:
+    """只识别 PDF 明确标出的空白页，避免误跳过扫描题页。"""
+    lines = [line.strip() for line in page.get_text("text").splitlines()]
+    lines = [line for line in lines if line]
+    if any(line.lower() == "there are no questions printed on this page"
+           for line in lines):
+        return True
+    if "BLANK PAGE" not in lines:
+        return False
+    return all(
+        line == "BLANK PAGE"
+        or re.fullmatch(r"\d{1,3}|\d{4}/\d{1,2}/[A-Z]/[A-Z]/\d{2}|©\s*UCLES\s*\d{4}", line)
+        for line in lines
+    )
+
+
+def _cache_declared_blank_page(markdown_path: str, page_num: int) -> None:
+    """为明确空白页发布可复用缓存，不向视觉模型发送无题内容。"""
+    staging_dir = create_page_staging_dir(markdown_path, page_num)
+    try:
+        with open(os.path.join(staging_dir, "page.md"), "w", encoding="utf-8") as stream:
+            stream.write("BLANK PAGE\n")
+        with open(os.path.join(staging_dir, "page.json"), "w", encoding="utf-8") as stream:
+            json.dump({"parsing_res_list": []}, stream)
+        publish_page_cache(staging_dir, markdown_path, page_num)
+        clear_page_failure(markdown_path, page_num)
+    finally:
+        discard_page_staging(staging_dir)
+
+
 def _ocr_single_page(
     doc, page_num: int, markdown_path: str, vl_model: str, pipeline: PaddleOCRVL
 ) -> None:
@@ -251,40 +284,55 @@ def _ocr_pages_locked(
     logger.info("待 OCR 页面 %d 个: %s", len(pages_to_ocr), pages_to_ocr[:30])
     doc = pymupdf.open(args.input)
     try:
-        imgs = [image_from_page(doc[page_num - 1]) for page_num in pages_to_ocr]
-        results = pipeline.predict_iter(imgs)
-        for idx, res in enumerate(results):
-            if idx >= len(pages_to_ocr):
-                break
-            _save_ocr_result(
-                res, pages_to_ocr[idx], markdown_path, args.vl_model
-            )
-        # 防御：服务端可能比请求数少返回几个结果（静默截断，不抛异常），
-        # 这里逐个补跑，避免整批正常结束时仍有页面静默缺失
-        missing = [
-            p
-            for p in pages_to_ocr
-            if not page_cache_is_ready(markdown_path, p)
+        blank_pages = [
+            page_num for page_num in pages_to_ocr
+            if _page_declared_blank(doc[page_num - 1])
         ]
-        if missing:
-            logger.warning(
-                "批量 OCR 后仍有 %d 页未产出结果，逐页补跑: %s",
-                len(missing),
-                missing,
-            )
-            fallback_pipeline = create_ocr_pipeline(args)
-            for page_num in missing:
-                _ocr_single_page(
-                    doc, page_num, markdown_path, args.vl_model, fallback_pipeline
-                )
-    except Exception as e:
-        logger.warning("批量 OCR 失败，重建 pipeline 逐页处理并跳过失败页: %s", e)
-        print(f"批量 OCR 失败（{e}），改为逐页处理并跳过失败页…")
-        # 批量异常后 paddlex 的异步状态可能已损坏，重建 pipeline 更稳妥
-        fallback_pipeline = create_ocr_pipeline(args)
-        for page_num in pages_to_ocr:
-            _ocr_single_page(
-                doc, page_num, markdown_path, args.vl_model, fallback_pipeline
-            )
+        for page_num in blank_pages:
+            _cache_declared_blank_page(markdown_path, page_num)
+        if blank_pages:
+            logger.info("跳过 PDF 明确标注的空白页: %s", blank_pages)
+            pages_to_ocr = [
+                page_num for page_num in pages_to_ocr
+                if page_num not in blank_pages
+            ]
+        if not pages_to_ocr:
+            return
+        for start in range(0, len(pages_to_ocr), OCR_PAGE_BATCH_SIZE):
+            batch_pages = pages_to_ocr[start:start + OCR_PAGE_BATCH_SIZE]
+            try:
+                imgs = [image_from_page(doc[page_num - 1]) for page_num in batch_pages]
+                for idx, res in enumerate(pipeline.predict_iter(imgs)):
+                    if idx >= len(batch_pages):
+                        break
+                    _save_ocr_result(
+                        res, batch_pages[idx], markdown_path, args.vl_model
+                    )
+                # 服务端可能正常结束却少返回页面；只补本批的缺页。
+                missing = [
+                    p for p in batch_pages
+                    if not page_cache_is_ready(markdown_path, p)
+                ]
+                if missing:
+                    logger.warning(
+                        "批量 OCR 后仍有 %d 页未产出结果，逐页补跑: %s",
+                        len(missing), missing,
+                    )
+                    fallback_pipeline = create_ocr_pipeline(args)
+                    for page_num in missing:
+                        _ocr_single_page(
+                            doc, page_num, markdown_path, args.vl_model,
+                            fallback_pipeline,
+                        )
+            except Exception as e:
+                logger.warning("批量 OCR 失败，重建 pipeline 逐页处理并跳过失败页: %s", e)
+                # 批量异常后 paddlex 的异步状态可能已损坏，重建 pipeline。
+                fallback_pipeline = create_ocr_pipeline(args)
+                pipeline = fallback_pipeline
+                for page_num in batch_pages:
+                    _ocr_single_page(
+                        doc, page_num, markdown_path, args.vl_model,
+                        fallback_pipeline,
+                    )
     finally:
         doc.close()
