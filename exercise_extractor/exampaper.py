@@ -59,6 +59,9 @@ QUESTION_TYPE_CN = {
 
 # 题型小节的中文序号：一、二、三…
 _CN_SECTION_RE = re.compile(r"^([一二三四五六七八九十]+)\s*[、.．]\s*(.*)$")
+_CN_SCORE_NOTE_RE = re.compile(
+    r"^\s*[（(]\s*本题\s*(?:满分\s*)?\d+\s*分\s*[）)]"
+)
 # 数字序号 + 顿号（如 "1、选择题"）也接受，但必须带题型词，避免把题号行当小节
 _DIGIT_SECTION_RE = re.compile(r"^(\d{1,2})\s*[、]\s*(.*)$")
 
@@ -324,6 +327,10 @@ def _is_section_start_line(line: str) -> bool:
         rest = m.group(2)
         if any(w in rest for w in _TYPE_WORDS):
             return True
+        if _CN_SCORE_NOTE_RE.match(rest):
+            # 旧竞赛卷常用“二、（本题15分）设…”直接标记一道大题，
+            # 其中分值说明把真正的题干起始词隔开了。
+            return True
         if "满分" in rest or "本题共" in rest:
             return True
         if any(marker in rest for marker in ("【解】", "【答案】", "【解析】")):
@@ -540,6 +547,15 @@ def _uses_parenthesized_numbering(chunk: str) -> bool:
         if _ITEM_NUM_RE.match(stripped):
             return False
     return False
+
+
+def _declares_multiple_subquestions(title: str) -> bool:
+    """题型标题明确声明多道小题时，括号编号应拆成独立习题。"""
+    match = re.search(
+        r"(?:本题\s*共\s*|共\s*)(\d+)\s*(?:道)?\s*(?:小题|题)",
+        title,
+    )
+    return bool(match and int(match.group(1)) > 1)
 
 
 def _parenthesized_question_numbers_to_plain(content: str) -> str:
@@ -889,7 +905,13 @@ def _split_section_exercises(section: TypeSection) -> list[Exercise]:
         )
         _repair_truncated_numbers(exercises)
     else:
-        chunk = _parenthesized_question_numbers_to_plain(chunk)
+        if (
+            _declares_multiple_subquestions(section["title"])
+            and _uses_parenthesized_numbering(chunk)
+        ):
+            chunk = _parenthesized_numbers_to_plain(chunk)
+        else:
+            chunk = _parenthesized_question_numbers_to_plain(chunk)
         exercises = _split_short_answer_exercises(
             chunk, section.get("start_page")
         )

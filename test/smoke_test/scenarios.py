@@ -330,6 +330,70 @@ def test_exampaper_old() -> None:
     )
 
 
+def test_exampaper_chinese_scored_questions() -> None:
+    """中文题号后带分值说明时，仍按大题边界切分。"""
+    from exercise_extractor import exampaper
+
+    content = load_scenario("exampaper_chinese_scored_questions.txt")
+    sections, _ = exampaper.split_type_sections(content)
+    node = _exampaper_node("数学专业类旧卷", content)
+    exampaper.extract_exercises([node])
+    exercises = node["exercises"]
+    check(
+        "带分值的中文大题识别为独立小节",
+        len(sections) == 3
+        and [section["section_key"] for section in sections]
+        == ["一", "二", "三"],
+        str([
+            (section["title"], section["section_key"])
+            for section in sections
+        ]),
+    )
+    check(
+        "中文大题不再整卷漏提或合并",
+        len(exercises) == 3
+        and [item["content"].splitlines()[0] for item in exercises]
+        == [
+            "（本题 15 分）在空间直角坐标系中设马鞍面 S。求点 P。",
+            "（本题 15 分）A=(aᵢⱼ) 为 n 阶实方阵。求规范形。",
+            "（本题 10 分）证明结论。",
+        ],
+        str([
+            (item.get("section_key"), item.get("content", ""))
+            for item in exercises
+        ]),
+    )
+
+
+def test_exampaper_declared_multiple_subquestions() -> None:
+    """题型标题声明多小题时，解答/计算题的括号编号应切开。"""
+    from exercise_extractor import exampaper
+
+    content = load_scenario("exampaper_declared_multiple_subquestions.txt")
+    node = _exampaper_node("早期非数学类试卷", content)
+    exampaper.extract_exercises([node])
+    exercises = node["exercises"]
+    check(
+        "本题共五小题拆为五题并保留后续大题",
+        len(exercises) == 7
+        and [item["number"] for item in exercises]
+        == ["1", "2", "3", "4", "5", "1", "1"]
+        and [item["section_key"] for item in exercises]
+        == ["一、计算题"] * 5 + ["二", "三"],
+        str([
+            (item.get("number"), item.get("section_key"))
+            for item in exercises
+        ]),
+    )
+    check(
+        "括号小题边界和大题内容不串题",
+        exercises[0]["content"].startswith("求 1 + 1。")
+        and exercises[4]["content"].startswith("求 5 + 5。")
+        and exercises[5]["content"].startswith("（本题 15 分）设函数 g(x)=x。")
+        and exercises[6]["content"].startswith("（本题 10 分）求积分 I。"),
+    )
+
+
 def test_exampaper_inline_jieda() -> None:
     """试题+解析：内嵌【答案】/【解】拆到 answer / solution_steps。"""
     from exercise_extractor import exampaper
@@ -608,6 +672,12 @@ SCENARIO_TESTS = {
     "answers_split_sections.txt": test_answers_split,
     "exampaper_recent_paper.txt": test_exampaper_recent,
     "exampaper_old_paper.txt": test_exampaper_old,
+    "exampaper_chinese_scored_questions.txt": (
+        test_exampaper_chinese_scored_questions
+    ),
+    "exampaper_declared_multiple_subquestions.txt": (
+        test_exampaper_declared_multiple_subquestions
+    ),
     "exampaper_inline_jieda.txt": test_exampaper_inline_jieda,
     "exampaper_tail_answers.txt": test_exampaper_tail_answers,
     "exampaper_paren_headings.txt": test_exampaper_paren_headings,
