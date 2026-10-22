@@ -394,6 +394,40 @@ def test_exampaper_declared_multiple_subquestions() -> None:
     )
 
 
+def test_exampaper_scoring_tables_and_instructions() -> None:
+    """试卷说明与评分栏不混入题目，实际数据表仍保留。"""
+    from exercise_extractor import exampaper
+
+    content = load_scenario("exampaper_scoring_tables_and_instructions.txt")
+    node = _exampaper_node("非数学类试卷", content)
+    exampaper.extract_exercises([node])
+    exercises = node["exercises"]
+    check(
+        "带每小题分值的一、标题识别为第一大题",
+        len(exercises) == 6
+        and [item["section_key"] for item in exercises] == ["一"] * 5 + ["二"]
+        and [item["number"] for item in exercises] == ["1", "2", "3", "4", "5", "1"],
+        str([(item["section_key"], item["number"]) for item in exercises]),
+    )
+    check(
+        "注意事项和评分表不进入题目",
+        all(
+            not any(
+                text in item["content"]
+                for text in ("所有答题", "密封线", "得分", "评阅人", "总分")
+            )
+            for item in exercises
+        ),
+    )
+    check(
+        "小题内容与真正的数据表保留",
+        len(exercises) == 6
+        and exercises[0]["content"] == "求第一个极限。"
+        and exercises[2]["content"] == "求第三个极限。"
+        and "| x | 1 | 2 |" in exercises[-1]["content"],
+    )
+
+
 def test_exampaper_inline_jieda() -> None:
     """试题+解析：内嵌【答案】/【解】拆到 answer / solution_steps。"""
     from exercise_extractor import exampaper
@@ -677,6 +711,9 @@ SCENARIO_TESTS = {
     ),
     "exampaper_declared_multiple_subquestions.txt": (
         test_exampaper_declared_multiple_subquestions
+    ),
+    "exampaper_scoring_tables_and_instructions.txt": (
+        test_exampaper_scoring_tables_and_instructions
     ),
     "exampaper_inline_jieda.txt": test_exampaper_inline_jieda,
     "exampaper_tail_answers.txt": test_exampaper_tail_answers,

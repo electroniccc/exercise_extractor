@@ -60,8 +60,10 @@ QUESTION_TYPE_CN = {
 # 题型小节的中文序号：一、二、三…
 _CN_SECTION_RE = re.compile(r"^([一二三四五六七八九十]+)\s*[、.．]\s*(.*)$")
 _CN_SCORE_NOTE_RE = re.compile(
-    r"^\s*[（(]\s*本题\s*(?:满分\s*)?\d+\s*分\s*[）)]"
+    r"^\s*[（(]\s*本题\s*(?:满分\s*)?\d+\s*分"
+    r"(?:\s*[,，]\s*每小题\s*\d+\s*分)?\s*[）)]"
 )
+_HTML_TABLE_RE = re.compile(r"<table\b[^>]*>.*?</table>", re.I | re.S)
 # 数字序号 + 顿号（如 "1、选择题"）也接受，但必须带题型词，避免把题号行当小节
 _DIGIT_SECTION_RE = re.compile(r"^(\d{1,2})\s*[、]\s*(.*)$")
 
@@ -555,7 +557,33 @@ def _declares_multiple_subquestions(title: str) -> bool:
         r"(?:本题\s*共\s*|共\s*)(\d+)\s*(?:道)?\s*(?:小题|题)",
         title,
     )
-    return bool(match and int(match.group(1)) > 1)
+    if match:
+        return int(match.group(1)) > 1
+    scores = re.search(
+        r"本题\s*(?:满分\s*)?(\d+)\s*分\s*[,，]\s*"
+        r"每小题\s*(\d+)\s*分",
+        title,
+    )
+    return bool(scores and int(scores.group(2)) > 0
+                and int(scores.group(1)) > int(scores.group(2)))
+
+
+def _strip_scoring_marks(content: str) -> str:
+    """去掉试卷的空评分表及 OCR 拆出的独立评分栏文字。"""
+    def replace(match: re.Match[str]) -> str:
+        rows = [
+            [
+                re.sub(r"\s+", "", re.sub(r"<[^>]+>", "", cell))
+                for cell in re.findall(
+                    r"<t[dh]\b[^>]*>(.*?)</t[dh]\s*>", row, re.I | re.S
+                )
+            ]
+            for row in re.findall(r"<tr\b[^>]*>(.*?)</tr\s*>", match.group(), re.I | re.S)
+        ]
+        return "" if rows == [["得分", ""], ["评阅人", ""]] else match.group()
+
+    content = _HTML_TABLE_RE.sub(replace, content)
+    return re.sub(r"(?m)^[ \t]*(?:得分|评阅人)[ \t]*$", "", content)
 
 
 def _parenthesized_question_numbers_to_plain(content: str) -> str:
@@ -875,6 +903,8 @@ def _split_section_exercises(section: TypeSection) -> list[Exercise]:
     chunk = "\n".join(section["lines"]).strip()
     if not chunk:
         return []
+    if not section.get("english_paper"):
+        chunk = _strip_scoring_marks(chunk)
     chunk = demote_exercise_headings(chunk)
     chunk = _HEADING_PREFIX_RE.sub("", chunk)
     # A-level 图表往往没有中文式图注。保留图片所在行，按页和
