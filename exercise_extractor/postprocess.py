@@ -136,9 +136,17 @@ def render_exercise_markdown(
         sep = item.get("separator", ".")
         chunks.append(f"*{item['number']}{sep}* {item['content']}\n\n")
         if item.get("solution_steps"):
-            chunks.append(f"**解**：{item['solution_steps']}\n\n")
+            solution = str(item["solution_steps"]).strip()
+            if solution.startswith("$$"):
+                chunks.append(f"**解**：\n\n{solution}\n\n")
+            else:
+                chunks.append(f"**解**：{solution}\n\n")
         if item.get("answer"):
-            chunks.append(f"**答**：{item['answer']}\n\n")
+            answer = str(item["answer"]).strip()
+            if answer.startswith("$$"):
+                chunks.append(f"**答**：\n\n{answer}\n\n")
+            else:
+                chunks.append(f"**答**：{answer}\n\n")
     return "".join(chunks)
 
 

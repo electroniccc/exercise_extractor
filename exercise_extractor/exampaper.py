@@ -1036,6 +1036,51 @@ def _split_answer_tail(tail_content: str) -> list[TypeSection]:
     return sections
 
 
+_INLINE_ANSWER_LABEL_RE = re.compile(
+    r"^\s*\*\*\s*(?:解|答案|解析|详解)\s*\*\*\s*[：:]?\s*"
+)
+
+
+def _numbered_answer_line(line: str) -> tuple[str, str] | None:
+    """识别答案行开头的题号，兼容答案标记、Markdown 斜体和公式行。"""
+    text = _INLINE_ANSWER_LABEL_RE.sub("", line, count=1)
+    math_match = re.match(r"^(\s*\$\$.*?&)\s*[（(]\s*(\d{1,3})\s*[）)](.*)$", text)
+    if math_match:
+        number = math_match.group(2)
+        return number, math_match.group(1) + math_match.group(3)
+    patterns = (
+        r"^\s*[（(]\s*(\d{1,3})\s*[）)]\s*(.*)$",
+        r"^\s*\*(\d{1,3})\s*[.．、]\*\s*(.*)$",
+        r"^\s*(\d{1,3})\s*[.．、]\s*(.*)$",
+    )
+    for pattern in patterns:
+        match = re.match(pattern, text)
+        if match:
+            return match.group(1), match.group(2)
+    return None
+
+
+def _normalize_answer_numbering(
+    block: TypeSection, expected_numbers: list[str]
+) -> TypeSection | None:
+    """仅当答案编号与目标题号完整一致时，把特殊答案标签转成行首题号。"""
+    if len(expected_numbers) < 2:
+        return None
+    normalized_lines: list[str] = []
+    observed_numbers: list[str] = []
+    for line in block.get("lines", []):
+        parsed = _numbered_answer_line(line)
+        if parsed:
+            number, content = parsed
+            observed_numbers.append(number)
+            normalized_lines.append(f"{number}. {content}".rstrip())
+        else:
+            normalized_lines.append(line)
+    if observed_numbers != expected_numbers:
+        return None
+    return {**block, "lines": normalized_lines}
+
+
 def _match_tail_answers(
     questions: list[Exercise], tail_sections: list[TypeSection]
 ) -> None:
@@ -1065,7 +1110,7 @@ def _match_tail_answers(
                 # 选择题/填空题：答案就是正文内容（如 “C”、“3”）
                 q["answer"] = a["content"]
 
-    def match_in(block: TypeSection) -> None:
+    def answer_pool(block: TypeSection) -> list[Exercise]:
         key = block.get("section_key")
         pool = by_key.get(key, []) if key else []
         if not pool:
@@ -1080,6 +1125,9 @@ def _match_tail_answers(
                 # 答案区连小节标题都没有（如“题号/答案”表格直接开头）：
                 # 按题号全卷匹配
                 pool = questions
+        return pool
+
+    def match_in(block: TypeSection, pool: list[Exercise]) -> None:
         for a in block.get("answers", []):
             number = a.get("number")
             for q in pool:
@@ -1088,10 +1136,18 @@ def _match_tail_answers(
                     break
 
     for block in tail_sections:
-        block["answers"] = _split_section_exercises(block)
+        pool = answer_pool(block)
+        answers = _split_section_exercises(block)
+        expected_numbers = [str(question.get("number", "")) for question in pool]
+        actual_numbers = [str(answer.get("number", "")) for answer in answers]
+        if actual_numbers != expected_numbers:
+            normalized = _normalize_answer_numbering(block, expected_numbers)
+            if normalized is not None:
+                answers = _split_section_exercises(normalized)
+        block["answers"] = answers
         # 答案区里可能有【解】/【答案】标记，先拆到 answer/solution_steps
         split_inline_answers(block["answers"])
-        match_in(block)
+        match_in(block, pool)
 
 
 def extract_exercises(sections: list[SectionNode]) -> None:
@@ -1104,6 +1160,40 @@ def extract_exercises(sections: list[SectionNode]) -> None:
         exercises: list[Exercise] = []
         for section in type_sections:
             exercises.extend(_split_section_exercises(section))
+        review_source_by_key = {
+            str(section.get("section_key") or "简答题"): "\n".join(
+                section.get("lines", [])
+            ).strip()
+            for section in type_sections
+        }
+        tail_sections_for_review = (
+            _split_answer_tail(tail_content) if tail_content else []
+        )
+        for key in review_source_by_key:
+            matching_tail = [
+                section
+                for section in tail_sections_for_review
+                if section.get("section_key") == key
+            ]
+            if matching_tail:
+                answer_markdown = "\n\n".join(
+                    "\n".join(section.get("lines", [])) for section in matching_tail
+                ).strip()
+            elif tail_content and (
+                not tail_sections_for_review
+                or any(
+                    not section.get("section_key")
+                    for section in tail_sections_for_review
+                )
+            ):
+                answer_markdown = tail_content.strip()
+            else:
+                answer_markdown = ""
+            if answer_markdown:
+                question_markdown = review_source_by_key[key]
+                review_source_by_key[key] = "\n\n".join(
+                    part for part in (question_markdown, answer_markdown) if part
+                )
         # 内嵌解析：【答案】/【解】拆到 answer / solution_steps
         split_inline_answers(exercises)
         # 内嵌答案已拆出后，再只规范选择题题干中的选项标记，避免把答案
@@ -1160,6 +1250,7 @@ def extract_exercises(sections: list[SectionNode]) -> None:
                     "exercise_page_range": page_range,
                     "tail_search_used": False,
                     "exercises": items,
+                    "_review_source_markdown": review_source_by_key.get(key, ""),
                     "_exampaper_extracted": True,
                 }
             )

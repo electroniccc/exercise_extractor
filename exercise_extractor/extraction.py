@@ -497,6 +497,8 @@ def extract_exercises(
                 # OCR 可能把题号行渲染成标题（如 "### 7.5 设氢原子的状态是"），
                 # 还原成题号行，避免丢题、并把后续题目归到错误小节。
                 content = demote_exercise_headings(content)
+            # 留存边界截取后的 OCR 原文供 WebUI 的 AI 整节审校使用；正式题目
+            node["_review_source_markdown"] = content
             # 先抽出配图（按图注归类），避免图片因排版位置被切进别的题
             content, figures = extract_figures(content)
             # 隐式节尾节点：区间刻意从上一节正文中段开始，第一题前的正文

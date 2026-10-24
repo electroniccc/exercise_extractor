@@ -13,12 +13,11 @@ from ..llm_usage import UsageCallback, report_usage, usage_from_response
 
 logger = logging.getLogger(__name__)
 
-# 与 ocr.py 中 toc_forge.bookmark_pdf 使用同一套阿里云 OpenAI-compatible 地址；
-# 调用接口时仍可通过 base_url 覆盖为其他兼容服务。
-DEFAULT_REVIEW_MODEL = "deepseek-v4-flash-0731"
-DEFAULT_REVIEW_BASE_URL = (
-    "https://ws-alorrjihwnhn7hw7.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
-)
+# OpenAI-compatible endpoint and default model from DeepSeek's official API.
+DEFAULT_REVIEW_MODEL = "deepseek-flash"
+DEFAULT_REVIEW_BASE_URL = "https://api.deepseek.com"
+DEFAULT_REVIEW_TIMEOUT_SECONDS = 180
+DEFAULT_REVIEW_REASONING_EFFORT = "none"
 
 # exercise_extractor 的 Markdown 输出格式：*1.*、*4-6.*、*1.2.3.* 题目……
 _EXERCISE_START_RE = re.compile(
@@ -26,7 +25,12 @@ _EXERCISE_START_RE = re.compile(
     r"\s*[.．、)）]\s*\*?\s+"
 )
 _HEADING_RE = re.compile(r"(?m)^\s*#{1,6}\s+\S.*$")
-_ANSWER_MARKER_RE = re.compile(r"(?m)^\s*(?:\*\*\s*)?(解|答)(?:\s*\*\*)?\s*[：:]\s*")
+_ANSWER_MARKER_RE = re.compile(
+    r"(?m)^\s*(?:\*\*\s*)?(解答|答案|解析|详解|解|答)(?:\s*\*\*)?\s*[：:]\s*"
+)
+_NUMBERED_ANSWER_START_RE = re.compile(
+    r"(?m)^[ \t]*(?:\$\$[^\n]*?&[ \t]*)?[（(]\s*(\d{1,3})\s*[）)]"
+)
 _MATH_SPAN_RE = re.compile(
     r"(?s)(?<!\\)\$\$(.*?)(?<!\\)\$\$|(?<!\\)\$(.*?)(?<!\\)\$"
 )
@@ -48,7 +52,15 @@ BASIC_REVIEW_PROMPT_TEMPLATE = r"""下面是对一个扫描版PDF文档做OCR后
 - 提取内容：该小节的习题与对应答案
 - 内容格式：嵌有LaTeX的Markdown
 
-请对这部分内容做校对，最终只输出校对后的Markdown正文本身，不要添加任何解释、总结或前后缀说明。
+请对这部分内容做校对和整节整理，最终只输出整理后的Markdown正文本身，不要添加任何解释、总结或前后缀说明。
+
+### 0. 整节题目与答案整理
+- 先通读整节，再判断每段题干和已有解答/答案分别属于哪道题；扫描或 OCR 可能把多个小题写在同一道题下，也可能让答案与题目错位。
+- 仅将原文中已经出现的解答/答案段移动到对应题目下面；必须保留原答案文字与公式，不得求解、推导、补写、扩写、删减或合并答案。
+- 保留原题号和题干顺序。每题使用独立的 `*题号.*` 开头；答案紧跟所属题目，并使用 `**解**：` 或 `**答**：` 标记。
+- OCR 原文中的 `(1)`、`(2)`、`1)` 等答案编号通常对应题号 `*1.*`、`*2.*`；应按编号逐题归属，并保留答案里的原编号文字。
+- 不能可靠判断答案归属时，保留该段原文及其相对顺序，不要猜测或丢弃。
+- 整理完成后，确保全部原题、公式和已有答案仍在输出中，且没有重复内容。
 
 ## 校对规则
 
@@ -117,6 +129,55 @@ $...$ 内部不得再出现 \(、\)；$$...$$ 内部不得再出现 \[、\]。
 </markdown>
 """
 
+MATCH_ANSWERS_PROMPT_TEMPLATE = r"""请整理下面这一节内容，先完成题目与答案匹配。此轮只判断归属，不修改题目、推导或公式。
+
+<current-draft>
+这是用户当前正在编辑的版本，优先级最高。若它与 OCR 参考内容冲突，必须保留当前稿中的题干、解答和答案；不能用 OCR 旧内容覆盖。
+{draft}
+</current-draft>
+
+<ocr-reference>
+仅用于从当前稿中找回确实漏掉的已有解答或答案；不要把它当作题干或答案的替代正文。
+{reference}
+</ocr-reference>
+
+原文中的 (1)、(2) 等题号和答案编号对应同一道题。每一道题都返回 number、question、solution_steps、answer 四个字符串字段：
+- question 只放题干，不放解析、答案或评分表；题号放在 number 字段。
+- solution_steps 放原文已有的推导过程，不包括“解答:”等标签或独立的最终答案。
+- answer 放原文明确给出的最终结果；填空题即应填的值，方程题即方程。可以从已有推导末尾提取，不要重新求解或编造。
+- 若只有最终结果，没有推导，solution_steps 为空；原文确实没有最终结果时，answer 为空。
+- 不得遗漏任何题目、公式和已有答案；保留题号顺序。
+
+只输出合法 JSON 对象，格式为 {"exercises":[{"number":"1","question":"...","solution_steps":"...","answer":"..."}]}。LaTeX 反斜线必须按 JSON 规则转义。
+
+文档：{document_name}
+小节：{section_name}"""
+
+FORMAT_ANSWERS_PROMPT_TEMPLATE = r"""下面是已经匹配好题号、题干、解答过程和最终答案的一节试卷。请做第二轮校对：修正明显 OCR 文字、标点和 LaTeX/KaTeX 公式错误，统一行内 $...$ 与独立 $$...$$ 定界符。
+
+保持 exercises 的题数、题号、顺序和四个字段的职责。question 只放题干，solution_steps 只放推导，answer 只放明确的最终结果。若 answer 为空而 solution_steps 已明确写出最终结果，应将该结果复制到 answer。不能凭题目自行求解，也不能删掉已有推导或答案。
+question、solution_steps、answer 都是 Markdown 字符串：每个行内数学公式必须用单个 $...$ 包裹，独立公式必须用 $$...$$ 包裹。严禁输出裸 LaTeX；例如 \frac{3}{2} 必须写成 $\frac{3}{2}$。输出 JSON 时只做 JSON 所需的反斜线转义，解码后的 Markdown 仍需保留正确的公式定界符。
+所有 $$...$$ 公式必须独立成段、单独占行，前后各留一个空行；禁止把 $$...$$ 放在中文句子或解答标记的同一行。
+
+只输出合法 JSON 对象，格式为 {"exercises":[{"number":"1","question":"...","solution_steps":"...","answer":"..."}]}。LaTeX 反斜线必须按 JSON 规则转义。
+
+文档：{document_name}
+小节：{section_name}
+第一轮匹配结果：
+<matched>
+{content}
+</matched>
+
+当前编辑稿（与第一轮匹配的主来源）：
+<current-draft>
+{draft}
+</current-draft>
+
+原始 OCR（仅供找回当前稿中漏掉的已有内容；与当前稿冲突时以当前稿为准）：
+<ocr-reference>
+{reference}
+</ocr-reference>"""
+
 
 
 def _exercise_segments(markdown: str) -> list[str]:
@@ -175,14 +236,205 @@ def _answer_marker_kinds_by_exercise(markdown: str) -> list[list[str]]:
     return kinds
 
 
-def _remove_unexpected_answer_segments(
-    original: str, revised: str
-) -> tuple[str, int]:
-    """删除模型给原本没有解/答的题目补出的解答段。
+def _rebuild_parenthesized_question_answers(source: str) -> str | None:
+    """从编号明确的 OCR 题干和答案区构造可再次切分的整节 Markdown。"""
+    markers = list(_ANSWER_MARKER_RE.finditer(source))
+    if len(markers) != 1:
+        return None
+    marker = markers[0]
+    questions = source[: marker.start()]
+    answers = source[marker.end() :]
+    question_starts = list(_NUMBERED_ANSWER_START_RE.finditer(questions))
+    answer_starts = list(_NUMBERED_ANSWER_START_RE.finditer(answers))
+    question_numbers = [match.group(1) for match in question_starts]
+    answer_numbers = [match.group(1) for match in answer_starts]
+    if (
+        len(question_numbers) < 2
+        or question_numbers != answer_numbers
+        or question_numbers != [str(index) for index in range(1, len(question_numbers) + 1)]
+    ):
+        return None
 
-    只有题号序列仍能对齐时才做清理；题号结构已经变化时交给后续校验回退，
-    避免把不确定的文本误删。返回 (清理后的 Markdown, 删除的题目数)。
+    def chunks(text: str, starts: list[re.Match[str]]) -> list[str]:
+        return [
+            text[match.start() : starts[index + 1].start() if index + 1 < len(starts) else len(text)].strip()
+            for index, match in enumerate(starts)
+        ]
+
+    question_chunks = chunks(questions, question_starts)
+    answer_chunks = chunks(answers, answer_starts)
+    result = []
+    for index, (question, answer) in enumerate(zip(question_chunks, answer_chunks)):
+        question_label = question_starts[index]
+        question_body = question[question_label.end() - question_label.start() :].strip()
+        if not question_body or not answer:
+            return None
+        # 试卷答题区末尾常附有“得分/评阅人”表格，不属于最后一题答案。
+        answer = re.sub(
+            r"(?is)<table\b[^>]*>.*?</table>",
+            lambda match: "" if "得分" in match.group() and "评阅人" in match.group() else match.group(),
+            answer,
+        ).strip()
+        result.append(
+            f"*{question_numbers[index]}.* {question_body}\n\n**解**：{answer}"
+        )
+    return "\n\n".join(result).rstrip() + "\n"
+
+
+def _remove_unexpected_answer_segments(
+    original: str, revised: str, *, allow_relocation: bool = False
+) -> tuple[str, int]:
+    """保护原有解答，删除模型新增的解答段。
+
+    默认按原题位置保护答案，供单题审校和数学审校使用。整节基础审校可启用
+    ``allow_relocation``：答案块必须能与原节中的某个已有答案匹配，匹配后恢复
+    原答案文本，允许它跨题移动但不允许模型改写或新增。
     """
+    if allow_relocation:
+        def compact_with_offsets(value: str) -> tuple[str, list[int]]:
+            offsets = [index for index, char in enumerate(value) if not char.isspace()]
+            return "".join(value[index] for index in offsets), offsets
+
+        source_blocks = []
+        original_markers = list(_ANSWER_MARKER_RE.finditer(original))
+        original_exercises = list(_EXERCISE_START_RE.finditer(original))
+        original_headings = list(_HEADING_RE.finditer(original))
+        for marker_index, marker in enumerate(original_markers):
+            boundaries = [
+                item.start() for item in original_markers[marker_index + 1 :]
+            ] + [item.start() for item in original_exercises if item.start() > marker.end()]
+            boundaries.extend(
+                item.start() for item in original_headings if item.start() > marker.end()
+            )
+            end = min(boundaries) if boundaries else len(original)
+            body = original[marker.end() : end].strip()
+            if body:
+                numbered_starts = list(_NUMBERED_ANSWER_START_RE.finditer(body))
+                if len(numbered_starts) > 1:
+                    chunks = [
+                        (
+                            numbered_starts[index].start(),
+                            numbered_starts[index + 1].start()
+                            if index + 1 < len(numbered_starts)
+                            else len(body),
+                            numbered_starts[index].group(1),
+                        )
+                        for index in range(len(numbered_starts))
+                    ]
+                else:
+                    chunks = [(0, len(body), None)]
+                for chunk_start, chunk_end, number in chunks:
+                    answer_body = body[chunk_start:chunk_end].strip()
+                    compact, offsets = compact_with_offsets(answer_body)
+                    source_blocks.append(
+                        {
+                            "marker": marker.group(0),
+                            "body": answer_body,
+                            "compact": compact,
+                            "offsets": offsets,
+                            "number": number,
+                            "used": set(),
+                        }
+                    )
+
+        revised_markers = list(_ANSWER_MARKER_RE.finditer(revised))
+        revised_exercises = list(_EXERCISE_START_RE.finditer(revised))
+        revised_headings = list(_HEADING_RE.finditer(revised))
+        replacements: list[tuple[int, int, str]] = []
+        removed = 0
+        for marker_index, marker in enumerate(revised_markers):
+            boundaries = [
+                item.start() for item in revised_markers[marker_index + 1 :]
+            ] + [item.start() for item in revised_exercises if item.start() > marker.end()]
+            boundaries.extend(
+                item.start() for item in revised_headings if item.start() > marker.end()
+            )
+            end = min(boundaries) if boundaries else len(revised)
+            candidate = revised[marker.end() : end].strip()
+            compact_candidate, _ = compact_with_offsets(candidate)
+            best: tuple[float, dict[str, Any], int, int] | None = None
+            current_exercise = next(
+                (
+                    item
+                    for item in reversed(revised_exercises)
+                    if item.start() < marker.start()
+                ),
+                None,
+            )
+            current_number = current_exercise.group(1) if current_exercise else None
+            if current_number is not None:
+                for source_block in source_blocks:
+                    if (
+                        source_block["number"] == current_number
+                        and not source_block["used"]
+                        and source_block["compact"]
+                    ):
+                        best = (
+                            1.0,
+                            source_block,
+                            0,
+                            len(source_block["compact"]),
+                        )
+                        break
+            for source_block in source_blocks:
+                if best is not None:
+                    break
+                compact_source = source_block["compact"]
+                if not compact_source or not compact_candidate:
+                    continue
+                cursor = compact_source.find(compact_candidate)
+                while cursor >= 0:
+                    matched_range = range(cursor, cursor + len(compact_candidate))
+                    if not any(index in source_block["used"] for index in matched_range):
+                        best = (1.0, source_block, cursor, cursor + len(compact_candidate))
+                        break
+                    cursor = compact_source.find(compact_candidate, cursor + 1)
+
+                if best is not None:
+                    break
+
+                # Allow light OCR punctuation/spacing edits only when the entire
+                # source answer block is still unused; restore that original block.
+                if not source_block["used"]:
+                    similarity = SequenceMatcher(
+                        None, compact_source, compact_candidate
+                    ).ratio()
+                    if (
+                        compact_source in compact_candidate
+                        or similarity >= 0.72
+                    ) and (
+                        best is None or similarity > best[0]
+                    ):
+                        best = (
+                            similarity,
+                            source_block,
+                            0,
+                            len(compact_source),
+                        )
+            if best is None:
+                replacements.append((marker.start(), end, ""))
+                removed += 1
+            else:
+                _, source_block, compact_start, compact_end = best
+                source_block["used"].update(range(compact_start, compact_end))
+                offsets = source_block["offsets"]
+                body_start = offsets[compact_start]
+                body_end = offsets[compact_end - 1] + 1
+                matched_body = source_block["body"][body_start:body_end].strip()
+                replacements.append(
+                    (marker.start(), end, f"{source_block['marker']}{matched_body}\n\n")
+                )
+        for start, end, replacement in reversed(replacements):
+            revised = revised[:start] + replacement + revised[end:]
+        if any(
+            len(source_block["used"]) != len(source_block["compact"])
+            for source_block in source_blocks
+        ):
+            raise ValueError(
+                "LLM 审校结果遗漏了原有解答，拒绝返回不完整章节"
+            )
+        return revised, removed
+
     original_numbers = _exercise_signatures(original)
     revised_numbers = _exercise_signatures(revised)
     if original_numbers != revised_numbers:
@@ -394,7 +646,12 @@ def _message_content(response: Any) -> str | None:
     return getattr(message, "content", None)
 
 
-def _make_client(client: Any, base_url: str | None, api_key: str | None) -> Any:
+def _make_client(
+    client: Any,
+    base_url: str | None,
+    api_key: str | None,
+    timeout_seconds: int = DEFAULT_REVIEW_TIMEOUT_SECONDS,
+) -> Any:
     if client is not None:
         return client
     try:
@@ -404,11 +661,15 @@ def _make_client(client: Any, base_url: str | None, api_key: str | None) -> Any:
     resolved_key = (
         api_key
         or os.environ.get("OPENAI_API_KEY")
-        or os.environ.get("ALIYUN_API_KEY")
+        or os.environ.get("DEEPSEEK_API_KEY")
     )
     if not resolved_key:
-        raise ValueError("需要 api_key，或设置环境变量 OPENAI_API_KEY")
-    kwargs: dict[str, Any] = {"api_key": resolved_key}
+        raise ValueError("需要 api_key，或设置环境变量 DEEPSEEK_API_KEY")
+    kwargs: dict[str, Any] = {
+        "api_key": resolved_key,
+        "timeout": timeout_seconds,
+        "max_retries": 0,
+    }
     kwargs["base_url"] = (
         base_url or os.environ.get("OPENAI_BASE_URL") or DEFAULT_REVIEW_BASE_URL
     )
@@ -421,6 +682,7 @@ def _chat_json(
     messages: list[dict[str, Any]],
     *,
     tools: list[dict[str, Any]] | None = None,
+    reasoning_effort: str = DEFAULT_REVIEW_REASONING_EFFORT,
 ) -> Any:
     kwargs: dict[str, Any] = {
         "model": model,
@@ -430,6 +692,10 @@ def _chat_json(
     # 仅供暂存的 math review 使用；basic review 走下方的纯文本调用。
     if not tools:
         kwargs["response_format"] = {"type": "json_object"}
+    if reasoning_effort != "none":
+        kwargs["reasoning_effort"] = reasoning_effort
+    else:
+        kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
     if tools:
         kwargs["tools"] = tools
         kwargs["tool_choice"] = "auto"
@@ -445,16 +711,409 @@ def _chat_text(
     client: Any,
     model: str,
     messages: list[dict[str, Any]],
+    reasoning_effort: str = DEFAULT_REVIEW_REASONING_EFFORT,
 ) -> Any:
     """调用不带结构化输出约束的文本接口，供 basic review 使用。"""
-    return client.chat.completions.create(
-        model=model,
-        messages=messages,
-        temperature=0,
-        # 基础审校只做文字、标点和 KaTeX 格式修复，显式关闭支持该参数的
-        # 模型的思考模式，避免无必要的推理延迟和额外 token。
-        extra_body={"enable_thinking": False},
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "temperature": 0,
+    }
+    if reasoning_effort != "none":
+        kwargs["reasoning_effort"] = reasoning_effort
+    else:
+        kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+    return client.chat.completions.create(**kwargs)
+
+
+def _structured_exercises(value: dict[str, Any] | None) -> list[dict[str, str]] | None:
+    """校验模型的四字段结果，避免把模型说明文字当作题干。"""
+    from ..parse_md_exercises import ANSWER_START_RE, SOLUTION_START_RE, split_at_line_marker
+
+    def clean(text: str) -> str:
+        text = re.sub(r"(?m)^\s*<!--\s*page:\s*\d+\s*-->\s*$", "", text)
+        text = re.sub(
+            r"(?is)<table\b[^>]*>.*?</table>",
+            lambda match: "" if "得分" in match.group() and "评阅人" in match.group() else match.group(),
+            text,
+        )
+        return text.strip()
+
+    raw_items = value.get("exercises") if isinstance(value, dict) else None
+    if not isinstance(raw_items, list) or not raw_items:
+        return None
+    items: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for raw_item in raw_items:
+        if not isinstance(raw_item, dict):
+            return None
+        number = str(raw_item.get("number") or "").strip()
+        if not re.fullmatch(r"\d{1,3}", number) or number in seen:
+            return None
+        question = raw_item.get("question")
+        solution = raw_item.get("solution_steps", "")
+        answer = raw_item.get("answer", "")
+        if not isinstance(question, str) or not question.strip():
+            return None
+        if not isinstance(solution, str) or not isinstance(answer, str):
+            return None
+        seen.add(number)
+        question = clean(re.sub(
+            rf"^\s*(?:\*{{0,2}}{number}\s*[.．、]\*{{0,2}}|[（(]{number}[）)])\s*",
+            "",
+            question,
+            count=1,
+        ))
+        solution = clean(re.sub(r"^\s*(?:\*\*\s*解\s*\*\*|解答|解)\s*[：:]\s*", "", solution))
+        answer = clean(re.sub(r"^\s*(?:\*\*\s*答\s*\*\*|答案|答)\s*[：:]\s*", "", answer))
+        question, misplaced_solution = split_at_line_marker(
+            question, SOLUTION_START_RE, allow_first_line=False
+        )
+        if misplaced_solution:
+            solution = clean("\n\n".join(part for part in (misplaced_solution, solution) if part))
+        question, misplaced_answer = split_at_line_marker(question, ANSWER_START_RE)
+        if misplaced_answer and not answer:
+            answer = clean(misplaced_answer)
+        solution, misplaced_answer = split_at_line_marker(solution, ANSWER_START_RE)
+        if misplaced_answer and not answer:
+            answer = clean(misplaced_answer)
+        question = _normalize_math_delimiters(question)
+        solution = _normalize_math_delimiters(solution)
+        answer = _normalize_math_delimiters(answer)
+        items.append(
+            {"number": number, "question": question, "solution_steps": solution, "answer": answer}
+        )
+    return items
+
+
+_MATH_ONLY_CHARS_RE = re.compile(r"^[A-Za-z0-9\\{}_^.,()+\-*/=<>|:;!%\s]+$")
+_LATEX_COMMAND_RE = re.compile(r"\\[A-Za-z]+")
+
+
+def _normalize_math_delimiters(value: str) -> str:
+    """Convert common TeX delimiters and wrap bare formula-only Markdown fields."""
+    value = re.sub(r"\\\((.*?)\\\)", r"$\1$", value, flags=re.DOTALL)
+    value = re.sub(
+        r"\\\[(.*?)\\\]",
+        lambda match: "\n\n$$" + match.group(1).strip("\n") + "$$\n\n",
+        value,
+        flags=re.DOTALL,
     )
+
+    def standalone_display_math(match: re.Match[str]) -> str:
+        formula = match.group(1).strip("\n")
+        return "\n\n$$" + formula + "$$\n\n"
+
+    value = re.sub(
+        r"(?<!\$)\$\$(.+?)\$\$(?!\$)",
+        standalone_display_math,
+        value,
+        flags=re.DOTALL,
+    )
+    value = re.sub(r"[ \t]+\n", "\n", value)
+    value = re.sub(r"\n{3,}", "\n\n", value).strip("\n")
+    stripped = value.strip()
+    if (
+        stripped
+        and not re.search(r"\$", stripped)
+        and _MATH_ONLY_CHARS_RE.fullmatch(stripped)
+        and (
+            _LATEX_COMMAND_RE.search(stripped)
+            or re.search(r"[=^_<>+*/]", stripped)
+        )
+    ):
+        delimiter = "$$" if "\n" in stripped or r"\begin{" in stripped else "$"
+        return delimiter + stripped + delimiter
+    return value
+
+
+def _structured_review_stage(
+    llm: Any,
+    *,
+    model: str,
+    prompt: str,
+    operation: str,
+    usage_callback: UsageCallback | None,
+    reasoning_effort: str,
+) -> list[dict[str, str]] | None:
+    response = _chat_json(
+        llm,
+        model,
+        [
+            {"role": "system", "content": "只返回合法 JSON 对象，完整保留数学题目与已有解答。"},
+            {"role": "user", "content": prompt},
+        ],
+        reasoning_effort=reasoning_effort,
+    )
+    report_usage(
+        usage_callback,
+        usage_from_response(response, operation=operation, model=model),
+    )
+    return _structured_exercises(_parse_json_response(_message_content(response)))
+
+
+def _render_structured_exercises(items: list[dict[str, str]]) -> str:
+    chunks = []
+    for item in items:
+        chunk = f"*{item['number']}.* {item['question']}"
+        if item["solution_steps"]:
+            solution = item["solution_steps"].strip()
+            if solution.startswith("$$"):
+                chunk += f"\n\n**解**：\n\n{solution}"
+            else:
+                chunk += f"\n\n**解**：{solution}"
+        if item["answer"]:
+            answer = item["answer"].strip()
+            if answer.startswith("$$"):
+                chunk += f"\n\n**答**：\n\n{answer}"
+            else:
+                chunk += f"\n\n**答**：{answer}"
+        chunks.append(chunk)
+    return "\n\n".join(chunks).rstrip() + "\n"
+
+
+def _review_raw_source_two_pass(
+    source: str,
+    document_name: str,
+    section_name: str,
+    *,
+    baseline_items: list[dict[str, Any]],
+    base_url: str | None,
+    api_key: str | None,
+    model: str,
+    timeout_seconds: int,
+    reasoning_effort: str,
+    client: Any,
+    usage_callback: UsageCallback | None,
+    reference_source: str | None = None,
+) -> tuple[str, list[dict[str, Any]]]:
+    """先匹配，再校对；最终 Markdown 由四字段结构统一渲染。"""
+    from ..parse_md_exercises import SOLUTION_START_RE, split_at_line_marker, split_exercises
+
+    llm = _make_client(client, base_url, api_key, timeout_seconds)
+    fallback_markdown = _rebuild_parenthesized_question_answers(source)
+    fallback_items: list[dict[str, str]] = []
+    if fallback_markdown:
+        fallback_items = [
+            {
+                "number": item["number"],
+                "question": item["content"],
+                "solution_steps": item.get("solution_steps") or "",
+                "answer": item.get("answer") or "",
+            }
+            for item in split_exercises(fallback_markdown, check_section_end=False)
+            if item.get("number") != "__preamble__"
+        ]
+    if not fallback_items and len(baseline_items) == 1:
+        _, raw_solution = split_at_line_marker(
+            source, SOLUTION_START_RE, allow_first_line=False
+        )
+        if raw_solution:
+            original = baseline_items[0]
+            fallback_items = _structured_exercises({"exercises": [{
+                "number": str(original.get("number") or ""),
+                "question": str(original.get("content") or ""),
+                "solution_steps": raw_solution,
+                "answer": str(original.get("answer") or ""),
+            }]}) or []
+    expected_numbers = [item["number"] for item in fallback_items]
+    baseline_by_number = {
+        str(item.get("number") or ""): item
+        for item in baseline_items
+        if item.get("number")
+    }
+    for item in fallback_items:
+        baseline = baseline_by_number.get(item["number"])
+        if baseline is None:
+            continue
+        for field in ("solution_steps", "answer"):
+            if not item[field] and baseline.get(field):
+                item[field] = str(baseline[field])
+    reference_by_number: dict[str, dict[str, Any]] = {}
+    if reference_source:
+        reference_fallback = _rebuild_parenthesized_question_answers(reference_source)
+        reference_items = [
+            item
+            for item in split_exercises(
+                reference_fallback or reference_source,
+                check_section_end=False,
+            )
+            if item.get("number") != "__preamble__"
+        ]
+        reference_by_number = {
+            str(item.get("number") or ""): item for item in reference_items
+        }
+        if len(baseline_items) == 1:
+            _, raw_reference_solution = split_at_line_marker(
+                reference_source, SOLUTION_START_RE, allow_first_line=False
+            )
+            if raw_reference_solution:
+                number = str(baseline_items[0].get("number") or "")
+                reference_item = reference_by_number.setdefault(
+                    number,
+                    {
+                        "number": number,
+                        "content": str(baseline_items[0].get("content") or ""),
+                        "solution_steps": "",
+                        "answer": "",
+                    },
+                )
+                if not reference_item.get("solution_steps"):
+                    reference_item["solution_steps"] = raw_reference_solution
+        for item in fallback_items:
+            reference_item = reference_by_number.get(item["number"])
+            if reference_item is None:
+                continue
+            for field in ("solution_steps", "answer"):
+                if not item[field] and reference_item.get(field):
+                    item[field] = str(reference_item[field])
+    if not fallback_items:
+        fallback_items = [
+            {
+                "number": str(item.get("number") or ""),
+                "question": str(item.get("content") or ""),
+                "solution_steps": str(item.get("solution_steps") or ""),
+                "answer": str(item.get("answer") or ""),
+            }
+            for item in baseline_items
+            if item.get("number") and item.get("content")
+        ]
+    for item in fallback_items:
+        reference_item = reference_by_number.get(item["number"])
+        if reference_item is None:
+            continue
+        for field in ("solution_steps", "answer"):
+            if not item[field] and reference_item.get(field):
+                item[field] = str(reference_item[field])
+    fallback_by_number = {item["number"]: item for item in fallback_items}
+    match_prompt = (
+        MATCH_ANSWERS_PROMPT_TEMPLATE.replace("{document_name}", document_name)
+        .replace("{section_name}", section_name)
+        .replace("{draft}", source)
+        .replace("{reference}", reference_source or source)
+    )
+    matched = _structured_review_stage(
+        llm,
+        model=model,
+        prompt=match_prompt,
+        operation="review.match",
+        usage_callback=usage_callback,
+        reasoning_effort=reasoning_effort,
+    )
+    warnings: list[dict[str, Any]] = []
+    if matched is None or (expected_numbers and [item["number"] for item in matched] != expected_numbers):
+        if not fallback_items:
+            raise ValueError("第一轮审校未返回可解析的题目与答案匹配结果")
+        matched = fallback_items
+        warnings.append({"code": "parenthesized_ocr_fallback"})
+    for item in matched:
+        source_item = fallback_by_number.get(item["number"])
+        reference_item = reference_by_number.get(item["number"])
+        if source_item and reference_item:
+            for field in ("question", "solution_steps", "answer"):
+                draft_value = str(
+                    source_item.get("question") if field == "question" else source_item.get(field) or ""
+                )
+                reference_value = str(
+                    reference_item.get("content")
+                    if field == "question"
+                    else reference_item.get(field) or ""
+                )
+                if (
+                    draft_value
+                    and reference_value
+                    and draft_value != reference_value
+                    and item[field] == reference_value
+                ):
+                    item[field] = draft_value
+        baseline_item = baseline_by_number.get(item["number"])
+        if baseline_item and reference_source:
+            for field in ("question", "solution_steps", "answer"):
+                draft_value = str(
+                    baseline_item.get("content")
+                    if field == "question"
+                    else baseline_item.get(field) or ""
+                )
+                if (
+                    draft_value
+                    and item[field] != draft_value
+                    and item[field] in reference_source
+                ):
+                    item[field] = draft_value
+        if source_item and source_item["solution_steps"] and (
+            not item["solution_steps"]
+            or len(item["solution_steps"]) < len(source_item["solution_steps"]) * 0.5
+        ):
+            item["solution_steps"] = source_item["solution_steps"]
+
+    format_prompt = (
+        FORMAT_ANSWERS_PROMPT_TEMPLATE.replace("{document_name}", document_name)
+        .replace("{section_name}", section_name)
+        .replace("{content}", json.dumps({"exercises": matched}, ensure_ascii=False))
+        .replace("{draft}", source)
+        .replace("{reference}", reference_source or source)
+    )
+    formatted = _structured_review_stage(
+        llm,
+        model=model,
+        prompt=format_prompt,
+        operation="review.format",
+        usage_callback=usage_callback,
+        reasoning_effort=reasoning_effort,
+    )
+    if formatted is None or [item["number"] for item in formatted] != [item["number"] for item in matched]:
+        formatted = matched
+        warnings.append({"code": "format_review_fallback"})
+    else:
+        for item, previous in zip(formatted, matched):
+            for field in ("question", "solution_steps", "answer"):
+                if not item[field] or (
+                    field == "solution_steps"
+                    and previous[field]
+                    and len(item[field]) < len(previous[field]) * 0.5
+                ):
+                    item[field] = previous[field]
+            source_item = fallback_by_number.get(item["number"])
+            reference_item = reference_by_number.get(item["number"])
+            if source_item and reference_item:
+                for field in ("question", "solution_steps", "answer"):
+                    draft_value = str(
+                        source_item.get("question") if field == "question" else source_item.get(field) or ""
+                    )
+                    reference_value = str(
+                        reference_item.get("content")
+                        if field == "question"
+                        else reference_item.get(field) or ""
+                    )
+                    if (
+                        draft_value
+                        and reference_value
+                        and draft_value != reference_value
+                        and item[field] == reference_value
+                    ):
+                        item[field] = draft_value
+            baseline_item = baseline_by_number.get(item["number"])
+            if baseline_item and reference_source:
+                for field in ("question", "solution_steps", "answer"):
+                    draft_value = str(
+                        baseline_item.get("content")
+                        if field == "question"
+                        else baseline_item.get(field) or ""
+                    )
+                    if (
+                        draft_value
+                        and item[field] != draft_value
+                        and item[field] in reference_source
+                    ):
+                        item[field] = draft_value
+    logger.info(
+        "整节两轮审校完成：文档=%s，小节=%s，题数=%d，缺少最终答案=%d",
+        document_name,
+        section_name,
+        len(formatted),
+        sum(not item["answer"] for item in formatted),
+    )
+    return _render_structured_exercises(formatted), warnings
 
 
 def review_markdown_basic(
@@ -465,6 +1124,8 @@ def review_markdown_basic(
     base_url: str | None = None,
     api_key: str | None = None,
     model: str = DEFAULT_REVIEW_MODEL,
+    timeout_seconds: int = DEFAULT_REVIEW_TIMEOUT_SECONDS,
+    reasoning_effort: str = DEFAULT_REVIEW_REASONING_EFFORT,
     client: Any = None,
     usage_callback: UsageCallback | None = None,
 ) -> str:
@@ -485,7 +1146,7 @@ def review_markdown_basic(
         exercise_count,
         len(content),
     )
-    llm = _make_client(client, base_url, api_key)
+    llm = _make_client(client, base_url, api_key, timeout_seconds)
     # 模板正文含大量 LaTeX 花括号，使用显式占位符替换，避免 ``str.format``
     # 把 ``\frac{}{}``、``\lim_{...}`` 等公式误当成格式字段。
     rendered_prompt = (
@@ -500,7 +1161,7 @@ def review_markdown_basic(
         },
         {"role": "user", "content": rendered_prompt},
     ]
-    response = _chat_text(llm, model, messages)
+    response = _chat_text(llm, model, messages, reasoning_effort)
     report_usage(
         usage_callback,
         usage_from_response(response, operation="review.basic", model=model),
@@ -529,9 +1190,13 @@ def review_markdown_basic(
 def review_basic(
     section: dict[str, Any],
     *,
+    source_markdown: str | None = None,
+    reference_markdown: str | None = None,
     base_url: str | None = None,
     api_key: str | None = None,
     model: str = DEFAULT_REVIEW_MODEL,
+    timeout_seconds: int = DEFAULT_REVIEW_TIMEOUT_SECONDS,
+    reasoning_effort: str = DEFAULT_REVIEW_REASONING_EFFORT,
     client: Any = None,
     usage_callback: UsageCallback | None = None,
 ) -> dict[str, Any]:
@@ -552,26 +1217,64 @@ def review_basic(
     section_name = normalized.get("path") or normalized.get("title")
     content_versions = normalized["content"]
     source = (
-        content_versions.get("tool_review")
+        content_versions.get("original")
+        if reference_markdown is not None
+        else source_markdown
+        or content_versions.get("tool_review")
         or content_versions.get("basic_review")
         or content_versions.get("original")
     )
     if not source:
         raise ValueError("section.content.original 不能为空")
 
-    raw_revised = review_markdown_basic(
-        source,
-        document_name,
-        section_name,
-        base_url=base_url,
-        api_key=api_key,
-        model=model,
-        client=client,
-        usage_callback=usage_callback,
-    ).strip()
-    revised, removed_answers = _remove_unexpected_answer_segments(
-        source, raw_revised
-    )
+    if reference_markdown is not None:
+        revised, warnings = _review_raw_source_two_pass(
+            source,
+            document_name,
+            section_name,
+            baseline_items=normalized["exercises"],
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+            timeout_seconds=timeout_seconds,
+            reasoning_effort=reasoning_effort,
+            client=client,
+            usage_callback=usage_callback,
+            reference_source=reference_markdown,
+        )
+        removed_answers = 0
+    elif source_markdown:
+        revised, warnings = _review_raw_source_two_pass(
+            source,
+            document_name,
+            section_name,
+            baseline_items=normalized["exercises"],
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+            timeout_seconds=timeout_seconds,
+            reasoning_effort=reasoning_effort,
+            client=client,
+            usage_callback=usage_callback,
+        )
+        removed_answers = 0
+    else:
+        raw_revised = review_markdown_basic(
+            source,
+            document_name,
+            section_name,
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+            timeout_seconds=timeout_seconds,
+            reasoning_effort=reasoning_effort,
+            client=client,
+            usage_callback=usage_callback,
+        ).strip()
+        revised, removed_answers = _remove_unexpected_answer_segments(
+            source, raw_revised, allow_relocation=True
+        )
+        warnings = []
     reviewed_items = [
         item
         for item in split_exercises(
@@ -589,9 +1292,14 @@ def review_basic(
     split_solutions_for_section(
         reviewed_items,
         normalized.get("title") or normalized.get("path"),
-        force=any(item.get("solution_steps") for item in original_items),
+        force=bool(source_markdown or reference_markdown)
+        or any(item.get("solution_steps") for item in original_items),
     )
-    warnings: list[dict[str, Any]] = []
+    for item in reviewed_items:
+        for field in ("content", "solution_steps", "answer"):
+            value = item.get(field)
+            if isinstance(value, str):
+                item[field] = _normalize_math_delimiters(value)
     if len(reviewed_items) != len(original_items):
         warnings.append(
             {
@@ -616,13 +1324,38 @@ def review_basic(
             }
         )
 
-    # 按题目顺序恢复页码、题型、原题号等 OCR 元数据；模型新增题目没有
-    # 对应元数据时仍保留模型结果，但使用固定字段默认值。
+    # 优先按题号恢复页码、题型、原题号等 OCR 元数据；模型新增题目没有
+    # 对应元数据时再按位置兜底，并使用固定字段默认值。
+    unused_originals = set(range(len(original_items)))
     for index, item in enumerate(reviewed_items):
-        if index >= len(original_items):
+        item_numbers = {
+            str(value)
+            for value in (item.get("number"), item.get("original_number"))
+            if value is not None
+        }
+        match_index = next(
+            (
+                original_index
+                for original_index in sorted(unused_originals)
+                if item_numbers
+                & {
+                    str(value)
+                    for value in (
+                        original_items[original_index].get("number"),
+                        original_items[original_index].get("original_number"),
+                    )
+                    if value is not None
+                }
+            ),
+            None,
+        )
+        if match_index is None and index in unused_originals:
+            match_index = index
+        if match_index is None:
             item["question_type"] = item.get("question_type") or "short_answer"
             continue
-        original_item = original_items[index]
+        unused_originals.remove(match_index)
+        original_item = original_items[match_index]
         for field in (
             "pages",
             "question_type",
@@ -660,9 +1393,13 @@ def review_basic_exercise(
     section: dict[str, Any],
     exercise_indices: list[int],
     *,
+    source_markdown: str | None = None,
+    reference_markdown: str | None = None,
     base_url: str | None = None,
     api_key: str | None = None,
     model: str = DEFAULT_REVIEW_MODEL,
+    timeout_seconds: int = DEFAULT_REVIEW_TIMEOUT_SECONDS,
+    reasoning_effort: str = DEFAULT_REVIEW_REASONING_EFFORT,
     client: Any = None,
     usage_callback: UsageCallback | None = None,
 ) -> list[dict[str, Any]]:
@@ -688,6 +1425,44 @@ def review_basic_exercise(
         raise ValueError("exercise_indices 必须是非空且范围有效的整数数组")
     if len(set(exercise_indices)) != len(exercise_indices):
         raise ValueError("exercise_indices 不能包含重复下标")
+    if source_markdown:
+        reviewed = review_basic(
+            section,
+            source_markdown=source_markdown,
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+            timeout_seconds=timeout_seconds,
+            reasoning_effort=reasoning_effort,
+            client=client,
+            usage_callback=usage_callback,
+        )
+        reviewed_by_number = {
+            str(item.get("number")): item for item in reviewed["exercises"]
+        }
+        numbers = [str(normalized["exercises"][i]["number"]) for i in exercise_indices]
+        if any(number not in reviewed_by_number for number in numbers):
+            raise ValueError("LLM 返回内容缺少选中的题目")
+        return [reviewed_by_number[number] for number in numbers]
+    if reference_markdown is not None:
+        reviewed = review_basic(
+            section,
+            reference_markdown=reference_markdown,
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+            timeout_seconds=timeout_seconds,
+            reasoning_effort=reasoning_effort,
+            client=client,
+            usage_callback=usage_callback,
+        )
+        reviewed_by_number = {
+            str(item.get("number")): item for item in reviewed["exercises"]
+        }
+        numbers = [str(normalized["exercises"][i]["number"]) for i in exercise_indices]
+        if any(number not in reviewed_by_number for number in numbers):
+            raise ValueError("LLM 返回内容缺少选中的题目")
+        return [reviewed_by_number[number] for number in numbers]
     selected = [normalized["exercises"][i] for i in exercise_indices]
     if any(not (item.get("content") or "").strip() for item in selected):
         raise ValueError("选中的 exercise.content 不能为空")
@@ -706,6 +1481,8 @@ def review_basic_exercise(
         base_url=base_url,
         api_key=api_key,
         model=model,
+        timeout_seconds=timeout_seconds,
+        reasoning_effort=reasoning_effort,
         client=client,
         usage_callback=usage_callback,
     ).strip()
@@ -722,6 +1499,11 @@ def review_basic_exercise(
         section_name,
         force=any(item.get("solution_steps") for item in selected),
     )
+    for item in items:
+        for field in ("content", "solution_steps", "answer"):
+            value = item.get(field)
+            if isinstance(value, str):
+                item[field] = _normalize_math_delimiters(value)
     result: list[dict[str, Any]] = []
     for item, original in zip(items, selected):
         for field in (

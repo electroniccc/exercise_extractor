@@ -475,6 +475,32 @@ def test_exampaper_tail_answers() -> None:
     )
 
 
+def test_exampaper_parenthesized_answers() -> None:
+    """题目因“共N小题”拆分后，答案区相同的括号编号逐题回填。"""
+    from exercise_extractor import exampaper
+
+    content = load_scenario("exampaper_parenthesized_answers.txt")
+    node = _exampaper_node("括号编号题目及答案", content)
+    exampaper.extract_exercises([node])
+    exercises = node["exercises"]
+    check(
+        "括号答案逐题回填",
+        [exercise["number"] for exercise in exercises] == ["1", "2", "3", "4", "5"]
+        and all(
+            answer in exercise["solution_steps"]
+            for exercise, answer in zip(
+                exercises, (f"答案{number}。" for number in ("一", "二", "三", "四", "五"))
+            )
+        ),
+        str([(exercise["number"], exercise["solution_steps"]) for exercise in exercises]),
+    )
+    check(
+        "AI 审校原文保留题型对应的文末答案",
+        node["children"][0]["_review_source_markdown"].count("答案") >= 5
+        and "**解**" in node["children"][0]["_review_source_markdown"],
+    )
+
+
 def test_exampaper_paren_headings() -> None:
     """解析文档：括号题号被 OCR 渲染成标题时降级还原。"""
     from exercise_extractor import exampaper
@@ -717,6 +743,7 @@ SCENARIO_TESTS = {
     ),
     "exampaper_inline_jieda.txt": test_exampaper_inline_jieda,
     "exampaper_tail_answers.txt": test_exampaper_tail_answers,
+    "exampaper_parenthesized_answers.txt": test_exampaper_parenthesized_answers,
     "exampaper_paren_headings.txt": test_exampaper_paren_headings,
     "exampaper_multi_choice_proof.txt": test_exampaper_multi_choice_proof,
     "exampaper_single_multi_choice.txt": test_exampaper_single_multi_choice,

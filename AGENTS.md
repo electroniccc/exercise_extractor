@@ -29,7 +29,7 @@
 | `main.py`（仓库根） | 兼容入口 shim：`python main.py ...` 等价于 `python -m exercise_extractor ...` |
 | `pyproject.toml` | pip 打包配置（setuptools），console script `exercise-extractor` |
 | `start_minio.sh` | 启动本地 MinIO docker（S3 兼容 OSS 后端）：默认 http://127.0.0.1:9000，minioadmin/minioadmin，桶 exercises 并设为公开读；环境变量可覆盖 |
-| `test/smoke_test/` | 冒烟测试模块（87 项）：`common.py` 公共设施（断言计数/CLI 子进程/场景加载）、`scenarios.py` 场景测试与注册表、`unit.py` 单元断言、`runner.py` 入口；运行 `python -m test.smoke_test`。场景化测试文本统一放 `test/test_scenarios/*.txt`，每个场景一个 txt |
+| `test/smoke_test/` | 冒烟测试模块：`common.py` 公共设施（断言计数/CLI 子进程/场景加载）、`scenarios.py` 场景测试与注册表、`unit.py` 单元断言、`runner.py` 入口；运行 `python -m test.smoke_test`。场景化测试文本统一放 `test/test_scenarios/*.txt`，每个场景一个 txt |
 | `test/test_scenarios/` | 场景化测试文本：每个场景一个 txt（近真题/旧真题/解析/文末答案/表格答案区/伪造缓存页/习题集等），smoke_test 依次扫描并按文件名分发 |
 
 ## 主流程（main.py）
@@ -175,6 +175,13 @@ fixed_exercise = review_basic_exercise(
     sections[0], [0]
 )
 ```
+
+WebUI 的待导入草稿审校使用 `review_basic(section, reference_markdown=...)` 与
+`review_basic_exercise(section, indices, reference_markdown=...)`。此时
+`section.content.original` 是用户当前稿，作为模型主输入；`reference_markdown`
+是私有原始 OCR，只能补充当前稿漏掉的已有解答/答案，发生冲突时不得覆盖当前稿。
+旧 `source_markdown` 保留原有 CLI/调用语义。`reparse_exercises` 按题号优先恢复
+已提取习题的页码、题型、题目归属、原题号和 bbox；新题使用默认元数据。
 
 `match_answers` 接受公共 section JSON 列表和完整答案 section JSON，返回新的填充后列表；`review_basic` 接受一个公共 section JSON，返回新的审校后 section JSON；`review_basic_exercise` 接受公共 section JSON 和其中题目的下标数组，在一次请求中审校这些题目并返回对应的 Exercise JSON 列表，便于只复核少量问题题目。三个接口默认使用阿里云 OpenAI-compatible 地址和 `deepseek-v4-flash-0731`，也可以在调用时
 传 `base_url`、`api_key`、`model` 覆盖。内部仍以整节 Markdown 调用 LLM，但 Markdown 不再是公共接口格式；basic review 按模板校对 OCR 文字、标点与 KaTeX/LaTeX 格式。数学审校模块暂时只保留、不继续开发；CLI 的 `--review` 默认暂时只执行第一轮基础审校，

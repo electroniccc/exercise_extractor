@@ -5,7 +5,7 @@ import os
 import re
 import tempfile
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from .common import check, run_cli
 
@@ -37,6 +37,11 @@ def test_unit_boundaries() -> None:
     check("多级题号", [e["number"] for e in exs] == ["1.1.1", "1.1.2"])
     e = split_exercises("1. 题目\n\n解 由题意可知…\n")[0]
     check("解+空格切分", e.get("solution_steps", "").startswith("由题意"))
+    e = split_exercises("1. 求方程通解。\n\n解答. 将原方程变形为\n\n$$y=x+C$$\n")[0]
+    check(
+        "OCR 解答句号标记切分为解题过程",
+        e["content"] == "求方程通解。" and "$$y=x+C$$" in e["solution_steps"],
+    )
     e = split_exercises("1. 设…\n\n证明：结论成立。\n\n证明. 由已知…\n")[0]
     check(
         "证明多标记取最后",
@@ -1171,12 +1176,20 @@ def test_llm_review_contract() -> None:
         review_markdown_basic,
         review_markdown_with_tools,
     )
+    from exercise_extractor.review.basic_review import _make_client
 
-    check("审校默认模型", DEFAULT_REVIEW_MODEL == "deepseek-v4-flash-0731")
+    check("审校默认模型", DEFAULT_REVIEW_MODEL == "deepseek-flash")
     check(
         "审校默认地址与目录识别一致",
         DEFAULT_REVIEW_BASE_URL
-        == "https://ws-alorrjihwnhn7hw7.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+        == "https://api.deepseek.com",
+    )
+    with patch("openai.OpenAI") as openai_client:
+        _make_client(None, DEFAULT_REVIEW_BASE_URL, "test-key", 180)
+    check(
+        "DeepSeek 客户端设置 180 秒超时并关闭 SDK 重试",
+        openai_client.call_args.kwargs["timeout"] == 180
+        and openai_client.call_args.kwargs["max_retries"] == 0,
     )
 
     content = "*1.* 题目，内容\n\n解：$x$\n"
@@ -1197,9 +1210,9 @@ def test_llm_review_contract() -> None:
     check("基础审校保留题目结构", "*1.* 题目，内容" in reviewed)
     check("基础审校不追加逐题状态", "审校状态：" not in reviewed)
     check(
-        "基础审校显式关闭思考模式",
+        "基础审校默认关闭思考",
         basic_client.chat.completions.create.call_args.kwargs["extra_body"]
-        == {"enable_thinking": False},
+        == {"thinking": {"type": "disabled"}},
     )
     usage_events = []
     usage_client = Mock()
@@ -1350,11 +1363,600 @@ def test_review_removes_supplemented_answers() -> None:
     visible = reviewed["content"]["basic_review"]
     check("删除无答案题的模型补答", "模型根据题目补出的答案" not in visible)
     check("删除部分答案题的模型补答", "模型补出的答案" not in visible)
-    check("保留原题已有解答", "原解答（格式修复）" in visible)
-    check("保留原题已有答案", "原答案（格式修复）" in visible)
+    check("保留原题已有解答原文", "原解答\n" in visible)
+    check("保留原题已有答案原文", "原答案\n" in visible)
     check(
         "删除补答后仍保留题号",
         all(visible.count(f"*{number}.*") == 1 for number in (1, 2, 3)),
+    )
+
+
+def test_review_reassigns_existing_answers() -> None:
+    """整节审校允许移动原有答案，但不接受新编答案。"""
+    from exercise_extractor.review import review_basic
+
+    source = (
+        "*1.* 求 $x$ 的值。\n\n解：第一题的已有过程。\n\n"
+        "（2）第二题的已有过程，含 $\\int_0^1 x\\,dx$。\n\n"
+        "*2.* 求 $y$ 的值。\n"
+    )
+    revised = (
+        "*1.* 求 $x$ 的值。\n\n**解**：第一题的已有过程。\n\n"
+        "*2.* 求 $y$ 的值。\n\n**解**：（2）第二题的已有过程，含 $\\int_0^1 x\\,dx$。\n\n"
+        "答：模型新编的答案。\n"
+    )
+    client = Mock()
+    client.chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=revised, tool_calls=[]))]
+    )
+    section = {
+        "document_name": "测试试卷",
+        "title": "第一大题",
+        "path": "第一大题",
+        "has_exercise": True,
+        "exercise_page_range": [1, 1],
+        "content": {"original": source},
+        "exercises": [
+            {
+                "number": "1",
+                "content": "求 $x$ 的值。",
+                "solution_steps": "第一题的已有过程。\n\n（2）第二题的已有过程，含 $\\int_0^1 x\\,dx$。",
+                "pages": [11],
+                "question_type": "calculation",
+            },
+            {
+                "number": "2",
+                "content": "求 $y$ 的值。",
+                "solution_steps": "",
+                "pages": [12],
+                "question_type": "short_answer",
+            },
+        ],
+    }
+
+    result = review_basic(section, client=client)
+    visible = result["content"]["basic_review"]
+    check("整节审校可重分配已有解答", result["exercises"][0]["solution_steps"] == "第一题的已有过程。"
+          and result["exercises"][1]["solution_steps"] == "（2）第二题的已有过程，含 $\\int_0^1 x\\,dx$。")
+    check("重拆保留题号、公式与粗体解标记", "*1.*" in visible and "*2.*" in visible
+          and "**解**：" in visible and r"\int_0^1 x\,dx" in visible)
+    check("整节审校移除模型新编答案", "模型新编的答案" not in visible)
+    check("按题号保留各题页码与题型", result["exercises"][0]["pages"] == [11]
+          and result["exercises"][1]["pages"] == [12]
+          and result["exercises"][0]["question_type"] == "calculation")
+
+    missing_client = Mock()
+    missing_client.chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(
+            content="*1.* 求 $x$ 的值。\n\n解：第一题的已有过程。\n\n*2.* 求 $y$ 的值。\n",
+            tool_calls=[],
+        ))]
+    )
+    try:
+        review_basic(section, client=missing_client)
+        missing_answers_rejected = False
+    except ValueError as error:
+        missing_answers_rejected = "遗漏了原有解答" in str(error)
+    check("模型漏回已有解答时拒绝返回不完整结果", missing_answers_rejected)
+
+
+def test_review_prefers_current_draft_over_ocr_reference() -> None:
+    """WebUI 草稿是审校正文，原始 OCR 仅补充草稿中缺失的已有解答。"""
+    from exercise_extractor.review import review_basic
+
+    draft = (
+        "*1.* 用户手动修改后的第一题。\n\n**答**：$manual$\n\n"
+        "*2.* 用户手动修改后的第二题。\n"
+    )
+    raw_ocr = (
+        "(1) OCR 中的旧第一题。\n(2) OCR 中的旧第二题。\n\n"
+        "解答: (1) $old$\n(2) $补回的已有解答$"
+    )
+    matched = {
+        "exercises": [
+            {
+                "number": "1",
+                "question": "OCR 中的旧第一题。",
+                "solution_steps": "",
+                "answer": "$old$",
+            },
+            {
+                "number": "2",
+                "question": "用户手动修改后的第二题。",
+                "solution_steps": "$补回的已有解答$",
+                "answer": "",
+            },
+        ]
+    }
+    client = Mock()
+    client.chat.completions.create.side_effect = [
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(matched, ensure_ascii=False), tool_calls=[]))]),
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(matched, ensure_ascii=False), tool_calls=[]))]),
+    ]
+    section = {
+        "document_name": "测试试卷",
+        "title": "第一大题",
+        "path": "第一大题",
+        "has_exercise": True,
+        "content": {"original": draft},
+        "exercises": [
+            {"number": "1", "content": "用户手动修改后的第一题。", "answer": "$manual$", "pages": [4]},
+            {"number": "2", "content": "用户手动修改后的第二题。", "answer": "", "pages": [5]},
+        ],
+    }
+
+    result = review_basic(section, reference_markdown=raw_ocr, client=client)
+    match_prompt = client.chat.completions.create.call_args_list[0].kwargs["messages"][1]["content"]
+    format_prompt = client.chat.completions.create.call_args_list[1].kwargs["messages"][1]["content"]
+    check(
+        "两轮审校都将当前草稿和 OCR 分开标记",
+        "用户手动修改后的第一题" in match_prompt
+        and raw_ocr in match_prompt
+        and "用户手动修改后的第一题" in format_prompt
+        and raw_ocr in format_prompt,
+    )
+    check(
+        "OCR 旧题干和旧答案被拦下，缺失解答可从 OCR 补回",
+        result["exercises"][0]["content"] == "用户手动修改后的第一题。"
+        and result["exercises"][0]["answer"] == "$manual$"
+        and result["exercises"][1]["content"] == "用户手动修改后的第二题。"
+        and result["exercises"][1]["solution_steps"] == "$补回的已有解答$"
+        and "OCR 中的旧第一题" not in result["content"]["original"]
+        and result["exercises"][0]["pages"] == [4]
+        and result["exercises"][1]["pages"] == [5],
+    )
+
+
+def test_reparse_preserves_pages_by_number() -> None:
+    """重新拆分后按题号恢复原题元数据，新增题使用默认字段。"""
+    from exercise_extractor import reparse_exercises
+
+    section = {
+        "document_name": "测试书",
+        "title": "习题1",
+        "path": "习题1",
+        "has_exercise": True,
+        "content": {"original": "*1.* 旧一题\n\n*2.* 旧二题\n"},
+        "exercises": [
+            {
+                "number": "2",
+                "original_number": "B",
+                "content": "旧二题",
+                "pages": [12],
+                "bbox": [{"page": 12, "bbox": [5, 6, 7, 8]}],
+                "question_type": "calculation",
+            },
+            {
+                "number": "1",
+                "original_number": "A",
+                "content": "旧一题",
+                "pages": [11],
+                "bbox": [{"page": 11, "bbox": [1, 2, 3, 4]}],
+                "question_type": "proof",
+            },
+        ],
+    }
+
+    result = reparse_exercises(
+        section,
+        "*1.* 重新拆分后的第一题\n\n*2.* 重新拆分后的第二题\n\n*3.* 新增题目\n",
+    )
+    first, second, third = result["exercises"]
+    check(
+        "重排题目按题号恢复页码、bbox 和题型",
+        first["number"] == "1" and first["pages"] == [11]
+        and first["bbox"] == [{"page": 11, "bbox": [1, 2, 3, 4]}]
+        and first["question_type"] == "proof"
+        and second["number"] == "2" and second["pages"] == [12]
+        and second["bbox"] == [{"page": 12, "bbox": [5, 6, 7, 8]}]
+        and second["question_type"] == "calculation",
+    )
+    check(
+        "新增题目使用默认元数据",
+        third["number"] == "3" and third["pages"] == []
+        and third["bbox"] == [] and third["question_type"] == "short_answer",
+    )
+
+
+def test_single_review_uses_reference_without_replacing_current_draft() -> None:
+    """单题公共审校也把当前稿作为主输入并只返回目标题。"""
+    from exercise_extractor.review import review_basic_exercise
+
+    section = {
+        "document_name": "测试试卷",
+        "title": "第一大题",
+        "path": "第一大题",
+        "has_exercise": True,
+        "content": {
+            "original": "*1.* 当前第一题。\n\n*2.* 当前第二题。\n"
+        },
+        "exercises": [
+            {"number": "1", "content": "当前第一题。", "pages": [7]},
+            {"number": "2", "content": "当前第二题。", "pages": [8]},
+        ],
+    }
+    response = {"exercises": [
+        {"number": "1", "question": "当前第一题。", "solution_steps": "", "answer": ""},
+        {"number": "2", "question": "当前第二题。", "solution_steps": "$补回的解答$", "answer": ""},
+    ]}
+    client = Mock()
+    client.chat.completions.create.side_effect = [
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(response, ensure_ascii=False), tool_calls=[]))]),
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(response, ensure_ascii=False), tool_calls=[]))]),
+    ]
+
+    result = review_basic_exercise(
+        section,
+        [1],
+        reference_markdown="(1) OCR 旧第一题。\n(2) OCR 旧第二题。\n解答: (2) $补回的解答$",
+        client=client,
+    )
+    prompt = client.chat.completions.create.call_args_list[0].kwargs["messages"][1]["content"]
+    check(
+        "单题审校只返回选中题且使用当前稿",
+        len(result) == 1
+        and result[0]["number"] == "2"
+        and result[0]["content"] == "当前第二题。"
+        and result[0]["solution_steps"] == "$补回的解答$"
+        and "当前第一题" in prompt
+        and "OCR 旧第一题" in prompt,
+    )
+
+
+def test_single_review_restores_missing_solution_from_reference() -> None:
+    """当前草稿漏了解答时，单题审校应从私有 OCR 恢复原有推导。"""
+    from exercise_extractor.review import review_basic_exercise
+
+    section = {
+        "document_name": "测试试卷",
+        "title": "第一大题",
+        "path": "第一大题",
+        "has_exercise": True,
+        "content": {"original": "*1.* 求微分方程通解。\n"},
+        "exercises": [{"number": "1", "content": "求微分方程通解。"}],
+    }
+    formatted = {"exercises": [{
+        "number": "1",
+        "question": "求微分方程通解。",
+        "solution_steps": "",
+        "answer": "$$x^2/2+C$$",
+    }]}
+    client = Mock()
+    client.chat.completions.create.side_effect = [
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="bad JSON", tool_calls=[]))]),
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(formatted, ensure_ascii=False), tool_calls=[]))]),
+    ]
+    result = review_basic_exercise(
+        section,
+        [0],
+        reference_markdown=(
+            "三、求微分方程通解。\n\n解答. 将原方程变形为\n\n"
+            "$$y'=x$$\n\n得所求通解为 $$x^2/2+C$$。"
+        ),
+        client=client,
+    )
+    check(
+        "单题审校从 OCR 参考恢复漏掉的推导",
+        len(result) == 1
+        and "将原方程变形为" in result[0]["solution_steps"]
+        and "$$y'=x$$" in result[0]["solution_steps"]
+        and result[0]["answer"] == "$$x^2/2+C$$",
+    )
+
+
+def test_review_uses_raw_ocr_markdown_for_parenthesized_answers() -> None:
+    """AI review 能从原始 OCR 整节恢复题号与括号编号答案的对应关系。"""
+    from exercise_extractor.review import review_basic
+
+    questions = [f"({number}) 第{number}题。" for number in range(1, 6)]
+    answers = [f"（{number}）第{number}题的原始答案。" for number in range(1, 6)]
+    raw_markdown = "\n\n".join(
+        [*questions, "解答:", *answers]
+    )
+    reviewed = {
+        "exercises": [
+            {
+                "number": str(number),
+                "question": f"第{number}题。",
+                "solution_steps": answers[number - 1],
+                "answer": "",
+            }
+            for number in range(1, 6)
+        ]
+    }
+    client = Mock()
+    client.chat.completions.create.side_effect = [
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(reviewed), tool_calls=[]))])
+        for _ in range(2)
+    ]
+    section = {
+        "document_name": "数学竞赛试卷",
+        "title": "第一大题",
+        "path": "第一大题",
+        "has_exercise": True,
+        "exercise_page_range": [1, 2],
+        "content": {
+            "original": "\n\n".join([questions[0], "**解**：第1题的原始答案。", *questions[1:]])
+        },
+        "exercises": [
+            {
+                "number": str(number),
+                "content": f"第{number}题。",
+                "solution_steps": "第1题的原始答案。" if number == 1 else "",
+                "pages": [number],
+            }
+            for number in range(1, 6)
+        ],
+    }
+
+    result = review_basic(section, source_markdown=raw_markdown, client=client)
+
+    check(
+        "括号编号答案从原始 OCR 复原并逐题匹配",
+        [exercise["solution_steps"] for exercise in result["exercises"]] == answers,
+    )
+    check(
+        "原始 OCR 审校后仍按题号恢复页码",
+        [exercise["pages"] for exercise in result["exercises"]]
+        == [[number] for number in range(1, 6)],
+    )
+
+
+def test_review_recovers_when_llm_keeps_parenthesized_question_numbers() -> None:
+    """模型没有输出 *1.* 题号时，可靠的原 OCR 编号仍可恢复整节。"""
+    from exercise_extractor.review import review_basic
+
+    raw = "\n\n".join(
+        [
+            *(f"({number}) 第{number}题。" for number in range(1, 6)),
+            "解答: (1) 答案一。",
+            "(2) 答案二。",
+            r"$$ \begin{aligned}&(3)答案三。\\&\end{aligned} $$",
+            "(4) 答案四。",
+            "(5) 答案五。",
+        ]
+    )
+    llm_markdown = "\n\n".join(
+        f"({number}) 第{number}题。\n\n**解**：({number}) 模型改写的答案。"
+        for number in range(1, 6)
+    )
+    client = Mock()
+    formatted = {
+        "exercises": [
+            {
+                "number": str(number),
+                "question": f"第{number}题。",
+                "solution_steps": f"({number}) 答案{['一', '二', '三', '四', '五'][number - 1]}。",
+                "answer": f"答案{['一', '二', '三', '四', '五'][number - 1]}",
+            }
+            for number in range(1, 6)
+        ]
+    }
+    client.chat.completions.create.side_effect = [
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=llm_markdown, tool_calls=[]))]),
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(formatted), tool_calls=[]))]),
+    ]
+    section = {
+        "document_name": "数学竞赛试卷",
+        "title": "第一大题",
+        "path": "第一大题",
+        "has_exercise": True,
+        "exercise_page_range": [1, 2],
+        "exercises": [
+            {"number": str(number), "content": f"第{number}题。", "pages": [1]}
+            for number in range(1, 6)
+        ],
+    }
+
+    result = review_basic(section, source_markdown=raw, client=client)
+
+    check(
+        "括号题号模型结果恢复为五道标准编号习题",
+        [item["number"] for item in result["exercises"]]
+        == [str(number) for number in range(1, 6)],
+    )
+    check(
+        "恢复原 OCR 答案并保留公式内的第三题编号",
+        all(
+            expected in item["solution_steps"]
+            for item, expected in zip(
+                result["exercises"],
+                ("答案一", "答案二", "答案三", "答案四", "答案五"),
+            )
+        )
+        and "模型改写" not in result["content"]["basic_review"],
+    )
+
+
+def test_raw_ocr_review_matches_then_formats_as_structured_exercises() -> None:
+    """原 OCR 审校两轮分工，最终使用固定题干/解/答模板。"""
+    from exercise_extractor.review import review_basic
+
+    source = (
+        "(1) 求 $x$。\n(2) 求 $y$。\n\n"
+        "解答: (1) 由条件得 $x=2$。\n(2) 计算得 $y=3$。"
+    )
+    first = {
+        "exercises": [
+            {"number": "1", "question": "求 $x$。", "solution_steps": "由条件得 $x=2$。", "answer": "$2$"},
+            {"number": "2", "question": "求 $y$。", "solution_steps": "计算得 $y=3$。", "answer": "$3$"},
+        ]
+    }
+    second = {
+        "exercises": [
+            {"number": "1", "question": "求 $x$。\n\n解答: 由条件得 $x = 2$。", "solution_steps": "", "answer": "$2$"},
+            {"number": "2", "question": "求 $y$。", "solution_steps": "<!-- page: 2 -->\n计算得 $y = 3$。\n<table><tr><td>得分</td><td>评阅人</td></tr></table>", "answer": "$3$"},
+        ]
+    }
+    client = Mock()
+    client.chat.completions.create.side_effect = [
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(value), tool_calls=[]))])
+        for value in (first, second)
+    ]
+    section = {
+        "document_name": "试卷",
+        "title": "第一大题",
+        "path": "第一大题",
+        "has_exercise": True,
+        "exercise_page_range": [1, 2],
+        "exercises": [
+            {"number": "1", "content": "求 $x$。", "pages": [1]},
+            {"number": "2", "content": "求 $y$。", "pages": [2]},
+        ],
+    }
+
+    result = review_basic(section, source_markdown=source, client=client)
+    visible = result["content"]["basic_review"]
+
+    check("原 OCR 审校分别调用匹配与格式化两轮", client.chat.completions.create.call_count == 2)
+    check(
+        "两轮提示分别处理归属和公式格式",
+        "匹配" in client.chat.completions.create.call_args_list[0].kwargs["messages"][1]["content"]
+        and "公式" in client.chat.completions.create.call_args_list[1].kwargs["messages"][1]["content"]
+        and "严禁输出裸 LaTeX" in client.chat.completions.create.call_args_list[1].kwargs["messages"][1]["content"]
+        and all(
+            call.kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
+            and "reasoning_effort" not in call.kwargs
+            for call in client.chat.completions.create.call_args_list
+        ),
+    )
+    check(
+        "第二轮按题干解答最终答案分别落字段",
+        [item["content"] for item in result["exercises"]] == ["求 $x$。", "求 $y$。"]
+        and [item["answer"] for item in result["exercises"]] == ["$2$", "$3$"]
+        and result["exercises"][0]["solution_steps"] == "由条件得 $x = 2$。",
+    )
+    check(
+        "编辑用 Markdown 只含规范解答标签",
+        visible.count("**解**：") == 2
+        and visible.count("**答**：") == 2
+        and "解答:" not in visible
+        and "<!-- page:" not in visible
+        and "评阅人" not in visible,
+    )
+
+
+def test_single_question_raw_ocr_solution_survives_review() -> None:
+    """单题试卷原始 OCR 有解答时，即使模型漏回也不能把它清空。"""
+    from exercise_extractor.review import review_basic_exercise
+
+    raw = (
+        "三、（本题14分）求微分方程 $y'x\\ln x\\sin y+(1-x\\cos y)\\cos y=0$ 的通解。\n\n"
+        "解答. 将原方程变形为\n\n"
+        "$$y^{\\prime}\\sin y+\\frac{1}{x\\ln x}\\cos y="
+        "\\frac{1}{\\ln x}\\cos^{2}y. $$\n\n"
+        "得所求通解为\n\n"
+        "$$\\frac{1}{\\cos y}=\\frac{x+C}{\\ln x}. $$"
+    )
+    section = {
+        "document_name": "数学竞赛试卷",
+        "title": "三",
+        "path": "三",
+        "has_exercise": True,
+        "exercises": [{"number": "1", "content": "（本题14分）求微分方程的通解。"}],
+    }
+    client = Mock()
+    client.chat.completions.create.side_effect = [
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="bad JSON", tool_calls=[]))]),
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({
+            "exercises": [{
+                "number": "1",
+                "question": "（本题14分）求微分方程的通解。",
+                "solution_steps": "",
+                "answer": r"$\frac{1}{\cos y}=\frac{x+C}{\ln x}$",
+            }]
+        }), tool_calls=[]))]),
+    ]
+
+    reviewed = review_basic_exercise(section, [0], source_markdown=raw, client=client)
+    check(
+        "单题审校读取原始 OCR 并保留整段解答",
+        client.chat.completions.create.call_count == 2
+        and len(reviewed) == 1
+        and "将原方程变形为" in reviewed[0]["solution_steps"]
+        and r"\frac{1}{\cos y}" in reviewed[0]["solution_steps"]
+        and r"\frac{x+C}{\ln x}" in reviewed[0]["answer"],
+    )
+
+
+def test_review_wraps_unmarked_latex_answer_in_dollars() -> None:
+    """LLM 漏写公式定界符时，最终题目 JSON 和 Markdown 都补齐。"""
+    from exercise_extractor.review import review_basic
+
+    source = "1. 求积分值。\n\n解答. 计算后得到结果。"
+    result_json = {
+        "exercises": [{
+            "number": "1",
+            "question": "求积分值。",
+            "solution_steps": "计算后得到结果。",
+            "answer": r"\frac{3}{2}",
+        }]
+    }
+    client = Mock()
+    client.chat.completions.create.side_effect = [
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(result_json), tool_calls=[]))]),
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(result_json), tool_calls=[]))]),
+    ]
+    section = {
+        "document_name": "测试试卷",
+        "title": "第一题",
+        "path": "第一题",
+        "has_exercise": True,
+        "exercises": [{"number": "1", "content": "求积分值。"}],
+    }
+
+    result = review_basic(section, source_markdown=source, client=client)
+    check(
+        "裸 LaTeX 答案被补成行内公式",
+        result["exercises"][0]["answer"] == r"$\frac{3}{2}$"
+        and r"**答**：$\frac{3}{2}$" in result["content"]["basic_review"],
+    )
+
+
+def test_display_math_is_rendered_as_a_standalone_block() -> None:
+    from exercise_extractor.review.basic_review import (
+        _normalize_math_delimiters,
+        _render_structured_exercises,
+    )
+
+    prose = _normalize_math_delimiters(r"最终结果为 $$\frac{3}{2}$$，故答案成立。")
+    answer = _normalize_math_delimiters(r"$$\frac{3}{2}$$")
+    rendered = _render_structured_exercises([{
+        "number": "1",
+        "question": "计算。",
+        "solution_steps": "",
+        "answer": answer,
+    }])
+    check(
+        "行内出现的双美元公式被拆为独立段落",
+        prose == r"最终结果为" + "\n\n" + r"$$\frac{3}{2}$$" + "\n\n" + "，故答案成立。",
+    )
+    check(
+        "答案标签与块级公式分行输出",
+        "**答**：\n\n$$\\frac{3}{2}$$" in rendered,
+    )
+
+
+def test_exercise_markdown_renderer_separates_display_math_from_labels() -> None:
+    from exercise_extractor.postprocess import render_exercise_markdown
+
+    rendered = render_exercise_markdown(
+        {
+            "has_exercise": True,
+            "title": "第一题",
+            "exercises": [{
+                "number": "1",
+                "content": "计算。",
+                "solution_steps": "$$x=1$$",
+                "answer": "$$y=2$$",
+            }],
+        },
+        include_section_headings=False,
+    )
+    check(
+        "通用习题 Markdown 渲染器将块公式移到标签下一行",
+        "**解**：\n\n$$x=1$$" in rendered
+        and "**答**：\n\n$$y=2$$" in rendered,
     )
 
 

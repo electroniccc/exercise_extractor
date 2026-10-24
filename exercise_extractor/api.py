@@ -129,6 +129,48 @@ def reparse_exercises(section: dict, markdown: str | None = None) -> dict:
             "pages": list(item.get("pages") or []),
             "bbox": list(item.get("bbox") or []),
         })
+    original_items = result.get("exercises")
+    if isinstance(original_items, list):
+        unused_originals = set(range(len(original_items)))
+        for index, exercise in enumerate(exercises):
+            exercise_numbers = {
+                str(value)
+                for value in (exercise.get("number"), exercise.get("original_number"))
+                if value is not None
+            }
+            match_index = next(
+                (
+                    original_index
+                    for original_index in sorted(unused_originals)
+                    if isinstance(original_items[original_index], dict)
+                    and exercise_numbers
+                    & {
+                        str(value)
+                        for value in (
+                            original_items[original_index].get("number"),
+                            original_items[original_index].get("original_number"),
+                        )
+                        if value is not None
+                    }
+                ),
+                None,
+            )
+            if match_index is None and index in unused_originals:
+                match_index = index
+            if match_index is None:
+                continue
+            unused_originals.remove(match_index)
+            original_item = original_items[match_index]
+            for field in (
+                "pages",
+                "question_type",
+                "section",
+                "section_key",
+                "original_number",
+                "bbox",
+            ):
+                if field in original_item:
+                    exercise[field] = original_item[field]
     result["exercises"] = exercises
     result["exercise_count"] = len(exercises)
     result["content"] = {**content, "original": text}
