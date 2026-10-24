@@ -137,16 +137,17 @@ def render_exercise_markdown(
         chunks.append(f"*{item['number']}{sep}* {item['content']}\n\n")
         if item.get("solution_steps"):
             solution = str(item["solution_steps"]).strip()
+            solution_label = "证" if item.get("question_type") == "proof" else "解"
             if solution.startswith("$$"):
-                chunks.append(f"**解**：\n\n{solution}\n\n")
+                chunks.append(f"**{solution_label}**:\n\n{solution}\n\n")
             else:
-                chunks.append(f"**解**：{solution}\n\n")
+                chunks.append(f"**{solution_label}**: {solution}\n\n")
         if item.get("answer"):
             answer = str(item["answer"]).strip()
             if answer.startswith("$$"):
-                chunks.append(f"**答**：\n\n{answer}\n\n")
+                chunks.append(f"**答**:\n\n{answer}\n\n")
             else:
-                chunks.append(f"**答**：{answer}\n\n")
+                chunks.append(f"**答**: {answer}\n\n")
     return "".join(chunks)
 
 

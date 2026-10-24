@@ -22,11 +22,11 @@ DEFAULT_REVIEW_REASONING_EFFORT = "none"
 # exercise_extractor 的 Markdown 输出格式：*1.*、*4-6.*、*1.2.3.* 题目……
 _EXERCISE_START_RE = re.compile(
     r"(?m)^\s*\*?((?:\d+(?:\.\d+)+|\d+(?:\s*[—–－-]\s*\d+)?))"
-    r"\s*[.．、)）]\s*\*?\s+"
+    r"\s*\\?[.．、)）]\s*\*?\s+"
 )
 _HEADING_RE = re.compile(r"(?m)^\s*#{1,6}\s+\S.*$")
 _ANSWER_MARKER_RE = re.compile(
-    r"(?m)^\s*(?:\*\*\s*)?(解答|答案|解析|详解|解|答)(?:\s*\*\*)?\s*[：:]\s*"
+    r"(?m)^\s*(?:\*\*\s*)?(解答|答案|解析|详解|解|答)(?:\s*\*\*)?\s*(?:[：:]|(?=[（(]\s*\d{1,3}\s*[）)]))\s*"
 )
 _NUMBERED_ANSWER_START_RE = re.compile(
     r"(?m)^[ \t]*(?:\$\$[^\n]*?&[ \t]*)?[（(]\s*(\d{1,3})\s*[）)]"
@@ -57,7 +57,11 @@ BASIC_REVIEW_PROMPT_TEMPLATE = r"""下面是对一个扫描版PDF文档做OCR后
 ### 0. 整节题目与答案整理
 - 先通读整节，再判断每段题干和已有解答/答案分别属于哪道题；扫描或 OCR 可能把多个小题写在同一道题下，也可能让答案与题目错位。
 - 仅将原文中已经出现的解答/答案段移动到对应题目下面；必须保留原答案文字与公式，不得求解、推导、补写、扩写、删减或合并答案。
-- 保留原题号和题干顺序。每题使用独立的 `*题号.*` 开头；答案紧跟所属题目，并使用 `**解**：` 或 `**答**：` 标记。
+- `**解**`/`**证**` 后的已有内容必须逐段完整保留，包括所有括号小问、公式块、分步推导和结论；只修正格式或明显 OCR 错误，不得总结、缩写，也不得处理完第一个小问就省略后续内容。
+- 严格区分解题过程与最终答案：有推理、计算步骤或证明正文的内容放入 solution_steps；只有原文明确给出的独立答案/答案区，或题目后仅有简短结果且没有推理过程时，才填 answer。详细过程末尾出现的结果仍属于过程，不得据此另造一个简短答案。
+- 如果原文只有详细解答过程（包括完整证明），answer 必须为空；如果原文只有简短结果，放入 answer，solution_steps 留空。绝不为缺少答案的题求解或从过程推导答案。
+- 保留原题号和题干顺序。每题使用独立的 `*题号.*` 开头；普通解答使用 `**解**:`，证明过程使用 `**证**:`，最终答案使用 `**答**:`。
+- 将“解法/解答”类过程规范为 `**解**`，将“证明/证法”类过程规范为 `**证**`。同一道题的多种解法必须保存在一个解答段中，依次用 `*法1*`、`*法2*` 等分隔；不要把不同解法拆成多道题。
 - OCR 原文中的 `(1)`、`(2)`、`1)` 等答案编号通常对应题号 `*1.*`、`*2.*`；应按编号逐题归属，并保留答案里的原编号文字。
 - 不能可靠判断答案归属时，保留该段原文及其相对顺序，不要猜测或丢弃。
 - 整理完成后，确保全部原题、公式和已有答案仍在输出中，且没有重复内容。
@@ -143,9 +147,10 @@ MATCH_ANSWERS_PROMPT_TEMPLATE = r"""请整理下面这一节内容，先完成�
 
 原文中的 (1)、(2) 等题号和答案编号对应同一道题。每一道题都返回 number、question、solution_steps、answer 四个字符串字段：
 - question 只放题干，不放解析、答案或评分表；题号放在 number 字段。
-- solution_steps 放原文已有的推导过程，不包括“解答:”等标签或独立的最终答案。
-- answer 放原文明确给出的最终结果；填空题即应填的值，方程题即方程。可以从已有推导末尾提取，不要重新求解或编造。
-- 若只有最终结果，没有推导，solution_steps 为空；原文确实没有最终结果时，answer 为空。
+- solution_steps 放原文已有的推导/证明过程，不包括“解答/证明”等外层标签或独立的最终答案；证明过程仍放在唯一的 solution_steps 字段中。
+- 同一道题如有多个解法，将所有方法合并在 solution_steps 字符串中，使用 `*法1*`、`*法2*` 等 Markdown 标记方法边界，不要拆分或丢弃。
+- answer 只放原文明示的独立最终结果，或题目后唯一的简短结果（没有推理步骤时）；不要从解答/证明的末尾复制或推导答案。
+- 若只有最终结果，没有推导，solution_steps 为空；若只有推导/证明过程而没有单独答案，answer 为空。
 - 不得遗漏任何题目、公式和已有答案；保留题号顺序。
 
 只输出合法 JSON 对象，格式为 {"exercises":[{"number":"1","question":"...","solution_steps":"...","answer":"..."}]}。LaTeX 反斜线必须按 JSON 规则转义。
@@ -155,7 +160,8 @@ MATCH_ANSWERS_PROMPT_TEMPLATE = r"""请整理下面这一节内容，先完成�
 
 FORMAT_ANSWERS_PROMPT_TEMPLATE = r"""下面是已经匹配好题号、题干、解答过程和最终答案的一节试卷。请做第二轮校对：修正明显 OCR 文字、标点和 LaTeX/KaTeX 公式错误，统一行内 $...$ 与独立 $$...$$ 定界符。
 
-保持 exercises 的题数、题号、顺序和四个字段的职责。question 只放题干，solution_steps 只放推导，answer 只放明确的最终结果。若 answer 为空而 solution_steps 已明确写出最终结果，应将该结果复制到 answer。不能凭题目自行求解，也不能删掉已有推导或答案。
+保持 exercises 的题数、题号、顺序和四个字段的职责。question 只放题干，solution_steps 只放原文已有的推导或证明正文（不含外层 `**解**`/`**证**` 标签），answer 只放原文明示的独立最终答案，或题目后唯一的简短结果（没有推理步骤时）。若原文只有解题过程/证明过程，即使过程末尾得出结果，也必须保持 answer 为空；不得从过程复制或推导答案，不得为证明题额外添加“答”。若原文只有简短结果，则将它放入 answer，solution_steps 留空。不能凭题目自行求解，也不能删掉已有推导或答案。
+同一道题存在多个解法时，必须全部保存在同一个 solution_steps 字符串里，并依次用 `*法1*`、`*法2*` 等分隔；不可为不同解法新增 exercise。证明题仍使用同一个 solution_steps 字段，最终 Markdown 外层标签由题目类型规范为 `**证**`。
 question、solution_steps、answer 都是 Markdown 字符串：每个行内数学公式必须用单个 $...$ 包裹，独立公式必须用 $$...$$ 包裹。严禁输出裸 LaTeX；例如 \frac{3}{2} 必须写成 $\frac{3}{2}$。输出 JSON 时只做 JSON 所需的反斜线转义，解码后的 Markdown 仍需保留正确的公式定界符。
 所有 $$...$$ 公式必须独立成段、单独占行，前后各留一个空行；禁止把 $$...$$ 放在中文句子或解答标记的同一行。
 
@@ -187,6 +193,46 @@ def _exercise_segments(markdown: str) -> list[str]:
         markdown[start.start() : starts[index + 1].start() if index + 1 < len(starts) else len(markdown)]
         for index, start in enumerate(starts)
     ]
+
+
+def _recover_escaped_numbered_exercises(
+    source: str, parsed_numbers: list[str]
+) -> list[dict[str, str]]:
+    """从明确转义的题号恢复边界，不依赖已受损的整节切分状态。"""
+    from ..parse_md_exercises import split_exercises
+
+    starts = list(_EXERCISE_START_RE.finditer(source))
+    numbers = [match.group(1) for match in starts]
+    if len(numbers) <= len(parsed_numbers) or not all(number.isdecimal() for number in numbers):
+        return []
+    if any(int(left) >= int(right) for left, right in zip(numbers, numbers[1:])):
+        return []
+    if not set(parsed_numbers).issubset(numbers):
+        return []
+    missing = [match for match in starts if match.group(1) not in parsed_numbers]
+    if not missing or not all(
+        re.search(r"\\[.．、)）]", match.group(0)) for match in missing
+    ):
+        return []
+
+    recovered: list[dict[str, str]] = []
+    for index, match in enumerate(starts):
+        end = starts[index + 1].start() if index + 1 < len(starts) else len(source)
+        body = source[match.end() : end].strip()
+        segment = f"*{match.group(1)}.* {body}"
+        items = [
+            item for item in split_exercises(segment, check_section_end=False)
+            if item.get("number") != "__preamble__"
+        ]
+        if len(items) != 1 or items[0]["number"] != match.group(1):
+            return []
+        recovered.append({
+            "number": items[0]["number"],
+            "question": items[0]["content"],
+            "solution_steps": items[0].get("solution_steps") or "",
+            "answer": items[0].get("answer") or "",
+        })
+    return recovered
 
 
 def _math_literal_signature(segment: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -276,7 +322,7 @@ def _rebuild_parenthesized_question_answers(source: str) -> str | None:
             answer,
         ).strip()
         result.append(
-            f"*{question_numbers[index]}.* {question_body}\n\n**解**：{answer}"
+            f"*{question_numbers[index]}.* {question_body}\n\n**解**: {answer}"
         )
     return "\n\n".join(result).rstrip() + "\n"
 
@@ -310,7 +356,7 @@ def _remove_unexpected_answer_segments(
             body = original[marker.end() : end].strip()
             if body:
                 numbered_starts = list(_NUMBERED_ANSWER_START_RE.finditer(body))
-                if len(numbered_starts) > 1:
+                if len(numbered_starts) > 1 and len(original_exercises) > 1:
                     chunks = [
                         (
                             numbered_starts[index].start(),
@@ -728,7 +774,16 @@ def _chat_text(
 
 def _structured_exercises(value: dict[str, Any] | None) -> list[dict[str, str]] | None:
     """校验模型的四字段结果，避免把模型说明文字当作题干。"""
-    from ..parse_md_exercises import ANSWER_START_RE, SOLUTION_START_RE, split_at_line_marker
+    from ..parse_md_exercises import (
+        ANSWER_START_RE,
+        PROOF_START_RE,
+        SOLUTION_START_RE,
+        normalize_solution_method_labels,
+        split_at_line_marker,
+        split_solution_method_block,
+    )
+
+    canonical_proof_marker = re.compile(r"^\s*\*\*\s*(?:证明|证)\s*\*\*[：:]?")
 
     def clean(text: str) -> str:
         text = re.sub(r"(?m)^\s*<!--\s*page:\s*\d+\s*-->\s*$", "", text)
@@ -764,13 +819,36 @@ def _structured_exercises(value: dict[str, Any] | None) -> list[dict[str, str]] 
             question,
             count=1,
         ))
-        solution = clean(re.sub(r"^\s*(?:\*\*\s*解\s*\*\*|解答|解)\s*[：:]\s*", "", solution))
+        solution = clean(normalize_solution_method_labels(solution))
         answer = clean(re.sub(r"^\s*(?:\*\*\s*答\s*\*\*|答案|答)\s*[：:]\s*", "", answer))
+        question, misplaced_methods = split_solution_method_block(question)
+        solution_kind = "proof" if PROOF_START_RE.match(solution) else None
+        if solution_kind:
+            solution = PROOF_START_RE.sub("", solution, count=1).strip()
+        elif SOLUTION_START_RE.match(solution):
+            solution = SOLUTION_START_RE.sub("", solution, count=1).strip()
+            if PROOF_START_RE.match(solution):
+                solution_kind = "proof"
+                solution = PROOF_START_RE.sub("", solution, count=1).strip()
+        solution = normalize_solution_method_labels(solution)
+        question, misplaced_proof = split_at_line_marker(
+            question, canonical_proof_marker, allow_first_line=False
+        )
         question, misplaced_solution = split_at_line_marker(
             question, SOLUTION_START_RE, allow_first_line=False
         )
-        if misplaced_solution:
-            solution = clean("\n\n".join(part for part in (misplaced_solution, solution) if part))
+        if misplaced_proof:
+            solution_kind = "proof"
+        misplaced = normalize_solution_method_labels(
+            "\n\n".join(
+                part for part in (misplaced_proof, misplaced_methods, misplaced_solution) if part
+            )
+        )
+        if misplaced:
+            if PROOF_START_RE.match(misplaced):
+                solution_kind = "proof"
+                misplaced = PROOF_START_RE.sub("", misplaced, count=1).strip()
+            solution = clean("\n\n".join(part for part in (misplaced, solution) if part))
         question, misplaced_answer = split_at_line_marker(question, ANSWER_START_RE)
         if misplaced_answer and not answer:
             answer = clean(misplaced_answer)
@@ -780,9 +858,15 @@ def _structured_exercises(value: dict[str, Any] | None) -> list[dict[str, str]] 
         question = _normalize_math_delimiters(question)
         solution = _normalize_math_delimiters(solution)
         answer = _normalize_math_delimiters(answer)
-        items.append(
-            {"number": number, "question": question, "solution_steps": solution, "answer": answer}
-        )
+        item = {
+            "number": number,
+            "question": question,
+            "solution_steps": solution,
+            "answer": answer,
+        }
+        if solution_kind:
+            item["_solution_kind"] = solution_kind
+        items.append(item)
     return items
 
 
@@ -852,22 +936,72 @@ def _structured_review_stage(
     return _structured_exercises(_parse_json_response(_message_content(response)))
 
 
-def _render_structured_exercises(items: list[dict[str, str]]) -> str:
+def _is_proof_question(text: str) -> bool:
+    return bool(re.search(r"(?:试证|证明|prove\b|show\s+that\b)", text, re.IGNORECASE))
+
+
+def _is_concise_answer_only(text: str) -> bool:
+    """是否像单独给出的简短结果，而不是解题/证明过程。"""
+    value = re.sub(r"(?s)\$\$?.*?\$\$?", " MATH ", text or "").strip()
+    if not value or len(value) > 120 or "\n" in value:
+        return False
+    reasoning = re.compile(
+        r"因为|所以|因此|故|由.{0,12}(?:得|可知|可得)|根据|设|令|解得|计算得|可证|证明|"
+        r"because|therefore|thus|hence|since|we\s+have|it\s+follows|proof",
+        re.IGNORECASE,
+    )
+    return not reasoning.search(value)
+
+
+def _solution_was_truncated(original: str, revised: str) -> bool:
+    """Detect substantial omissions from a single-exercise review response."""
+    source = (original or "").strip()
+    candidate = (revised or "").strip()
+    if not source:
+        return False
+    if not candidate:
+        return True
+    source_parts = re.findall(r"(?m)^[ \t]*(?:解\s*)?[（(](\d{1,3})[）)]", source)
+    revised_parts = set(
+        re.findall(r"(?m)^[ \t]*(?:解\s*)?[（(](\d{1,3})[）)]", candidate)
+    )
+    if len(source_parts) > 1 and any(part not in revised_parts for part in source_parts):
+        return True
+    source_size = len(re.sub(r"\s+", "", source))
+    revised_size = len(re.sub(r"\s+", "", candidate))
+    return source_size >= 120 and revised_size < source_size * 0.55
+
+
+def _render_structured_exercises(
+    items: list[dict[str, str]],
+    baseline_items: list[dict[str, Any]] | None = None,
+) -> str:
+    from ..parse_md_exercises import normalize_solution_method_labels
+
+    baseline_by_number = {
+        str(item.get("number") or ""): item for item in (baseline_items or [])
+    }
     chunks = []
     for item in items:
         chunk = f"*{item['number']}.* {item['question']}"
         if item["solution_steps"]:
-            solution = item["solution_steps"].strip()
+            solution = normalize_solution_method_labels(item["solution_steps"]).strip()
+            baseline = baseline_by_number.get(item["number"], {})
+            solution_label = "证" if (
+                item.get("_solution_kind") == "proof"
+                or baseline.get("question_type") == "proof"
+                or _is_proof_question(item["question"])
+            ) else "解"
             if solution.startswith("$$"):
-                chunk += f"\n\n**解**：\n\n{solution}"
+                chunk += f"\n\n**{solution_label}**:\n\n{solution}"
             else:
-                chunk += f"\n\n**解**：{solution}"
+                chunk += f"\n\n**{solution_label}**: {solution}"
         if item["answer"]:
             answer = item["answer"].strip()
             if answer.startswith("$$"):
-                chunk += f"\n\n**答**：\n\n{answer}"
+                chunk += f"\n\n**答**:\n\n{answer}"
             else:
-                chunk += f"\n\n**答**：{answer}"
+                chunk += f"\n\n**答**: {answer}"
         chunks.append(chunk)
     return "\n\n".join(chunks).rstrip() + "\n"
 
@@ -904,6 +1038,17 @@ def _review_raw_source_two_pass(
             for item in split_exercises(fallback_markdown, check_section_end=False)
             if item.get("number") != "__preamble__"
         ]
+    if not fallback_items:
+        fallback_items = [
+            {
+                "number": str(item.get("number") or ""),
+                "question": str(item.get("content") or ""),
+                "solution_steps": str(item.get("solution_steps") or ""),
+                "answer": str(item.get("answer") or ""),
+            }
+            for item in split_exercises(source, check_section_end=False)
+            if item.get("number") != "__preamble__"
+        ]
     if not fallback_items and len(baseline_items) == 1:
         _, raw_solution = split_at_line_marker(
             source, SOLUTION_START_RE, allow_first_line=False
@@ -916,6 +1061,11 @@ def _review_raw_source_two_pass(
                 "solution_steps": raw_solution,
                 "answer": str(original.get("answer") or ""),
             }]}) or []
+    recovered_items = _recover_escaped_numbered_exercises(
+        source, [item["number"] for item in fallback_items]
+    )
+    if recovered_items:
+        fallback_items = recovered_items
     expected_numbers = [item["number"] for item in fallback_items]
     baseline_by_number = {
         str(item.get("number") or ""): item
@@ -923,14 +1073,14 @@ def _review_raw_source_two_pass(
         if item.get("number")
     }
     for item in fallback_items:
-        baseline = baseline_by_number.get(item["number"])
+        baseline = None if recovered_items else baseline_by_number.get(item["number"])
         if baseline is None:
             continue
         for field in ("solution_steps", "answer"):
             if not item[field] and baseline.get(field):
                 item[field] = str(baseline[field])
     reference_by_number: dict[str, dict[str, Any]] = {}
-    if reference_source:
+    if reference_source and not recovered_items:
         reference_fallback = _rebuild_parenthesized_question_answers(reference_source)
         reference_items = [
             item
@@ -1026,7 +1176,7 @@ def _review_raw_source_two_pass(
                     and item[field] == reference_value
                 ):
                     item[field] = draft_value
-        baseline_item = baseline_by_number.get(item["number"])
+        baseline_item = None if recovered_items else baseline_by_number.get(item["number"])
         if baseline_item and reference_source:
             for field in ("question", "solution_steps", "answer"):
                 draft_value = str(
@@ -1046,10 +1196,39 @@ def _review_raw_source_two_pass(
         ):
             item["solution_steps"] = source_item["solution_steps"]
 
+    # Keep the answer field evidence-based even if either LLM pass invents one.
+    # A short result that was the only material after the question is an answer;
+    # a derivation or proof remains solely in solution_steps, including its last line.
+    for item in matched:
+        source_item = fallback_by_number.get(item["number"], {})
+        reference_item = reference_by_number.get(item["number"], {})
+        explicit_answer = bool(
+            source_item.get("answer") or reference_item.get("answer")
+        )
+        concise_only = next(
+            (
+                str(candidate.get("solution_steps") or "").strip()
+                for candidate in (source_item, reference_item)
+                if _is_concise_answer_only(str(candidate.get("solution_steps") or ""))
+            ),
+            None,
+        )
+        if not explicit_answer and not concise_only:
+            item["answer"] = ""
+
     format_prompt = (
         FORMAT_ANSWERS_PROMPT_TEMPLATE.replace("{document_name}", document_name)
         .replace("{section_name}", section_name)
-        .replace("{content}", json.dumps({"exercises": matched}, ensure_ascii=False))
+        .replace(
+            "{content}",
+            json.dumps(
+                {"exercises": [
+                    {key: item[key] for key in ("number", "question", "solution_steps", "answer")}
+                    for item in matched
+                ]},
+                ensure_ascii=False,
+            ),
+        )
         .replace("{draft}", source)
         .replace("{reference}", reference_source or source)
     )
@@ -1066,6 +1245,8 @@ def _review_raw_source_two_pass(
         warnings.append({"code": "format_review_fallback"})
     else:
         for item, previous in zip(formatted, matched):
+            if previous.get("_solution_kind") == "proof":
+                item["_solution_kind"] = "proof"
             for field in ("question", "solution_steps", "answer"):
                 if not item[field] or (
                     field == "solution_steps"
@@ -1106,6 +1287,23 @@ def _review_raw_source_two_pass(
                         and item[field] in reference_source
                     ):
                         item[field] = draft_value
+    # The formatting pass is also not allowed to turn a derivation into a new
+    # answer field. Reapply the source-evidence rule after it has completed.
+    for item in formatted:
+        source_item = fallback_by_number.get(item["number"], {})
+        reference_item = reference_by_number.get(item["number"], {})
+        if source_item.get("answer") or reference_item.get("answer"):
+            continue
+        concise_only = next(
+            (
+                str(candidate.get("solution_steps") or "").strip()
+                for candidate in (source_item, reference_item)
+                if _is_concise_answer_only(str(candidate.get("solution_steps") or ""))
+            ),
+            None,
+        )
+        if not concise_only:
+            item["answer"] = ""
     logger.info(
         "整节两轮审校完成：文档=%s，小节=%s，题数=%d，缺少最终答案=%d",
         document_name,
@@ -1113,7 +1311,7 @@ def _review_raw_source_two_pass(
         len(formatted),
         sum(not item["answer"] for item in formatted),
     )
-    return _render_structured_exercises(formatted), warnings
+    return _render_structured_exercises(formatted, baseline_items), warnings
 
 
 def review_markdown_basic(
@@ -1365,7 +1563,27 @@ def review_basic(
             "bbox",
         ):
             if field in original_item:
+                if field == "question_type" and item.get("question_type") == "proof":
+                    continue
                 item[field] = original_item[field]
+
+    # Rebuild the editor-facing Markdown from the normalized exercise fields so
+    # legacy labels (解答/证明/解法) cannot leak past review.
+    revised = _render_structured_exercises(
+        [
+            {
+                "number": str(item.get("number") or index + 1),
+                "question": str(item.get("content") or ""),
+                "solution_steps": str(item.get("solution_steps") or ""),
+                "answer": str(item.get("answer") or ""),
+                "_solution_kind": "proof"
+                if item.get("question_type") == "proof"
+                else "",
+            }
+            for index, item in enumerate(reviewed_items)
+        ],
+        original_items,
+    )
 
     reviewed_node = {
         **normalized,
@@ -1504,6 +1722,17 @@ def review_basic_exercise(
             value = item.get(field)
             if isinstance(value, str):
                 item[field] = _normalize_math_delimiters(value)
+    for item, original in zip(items, selected):
+        original_solution = str(original.get("solution_steps") or "")
+        if _solution_was_truncated(
+            original_solution, str(item.get("solution_steps") or "")
+        ):
+            logger.warning(
+                "单题审校疑似遗漏解答内容，保留原始解答：文档=%s，题号=%s",
+                document_name,
+                original.get("number"),
+            )
+            item["solution_steps"] = original_solution
     result: list[dict[str, Any]] = []
     for item, original in zip(items, selected):
         for field in (
@@ -1515,6 +1744,8 @@ def review_basic_exercise(
             "bbox",
         ):
             if field in original:
+                if field == "question_type" and item.get("question_type") == "proof":
+                    continue
                 item[field] = original[field]
         result.append({
             "number": str(item.get("number") or original.get("number") or ""),

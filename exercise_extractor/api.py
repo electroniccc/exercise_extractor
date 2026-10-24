@@ -322,7 +322,8 @@ def extract_exercise_from_markdown(
             attach_figures(exercises, figures)
             convert_exercise_tables(exercises)
             for item in exercises:
-                item["question_type"] = "short_answer"
+                if item.get("question_type") != "proof":
+                    item["question_type"] = "short_answer"
                 item.setdefault("answer", "")
                 item.setdefault("solution_steps", "")
             _renumber_markdown_exercises(exercises)

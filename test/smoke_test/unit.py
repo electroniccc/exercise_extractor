@@ -35,6 +35,33 @@ def test_unit_boundaries() -> None:
     check("区间题号 4-6", any(e.get("number") == "4-6" for e in exs))
     exs = split_exercises("1.1.1 证明：a\n\n1.1.2 证明：b\n")
     check("多级题号", [e["number"] for e in exs] == ["1.1.1", "1.1.2"])
+    escaped_number = (
+        "*10.* 证明前一题。\n\n**证**: 前一题的证明。\n\n"
+        "11\\. 用拉贝判别法判别下列级数。\n\n**解**: 第十一题的解答。\n\n"
+        "*12.* 证明后一题。\n"
+    )
+    exs = split_exercises(escaped_number, check_section_end=False)
+    check(
+        "Markdown 转义句点的题号仍独立切题并保留解答归属",
+        [item["number"] for item in exs] == ["10", "11", "12"]
+        and "第十一题的解答" in exs[1]["solution_steps"]
+        and "第十一题" not in exs[0]["solution_steps"],
+    )
+    damaged_display_math = (
+        "*8.* 利用级数收敛的必要条件，证明下列等式：\n\n"
+        "**证**: 设 $u_n$ 为题目中的数列。\n\n"
+        "$$\\frac{(n+1)^{n+1}}{[(n+1)! $$ }^2\\cdot\\frac{(n!)^2}{n^n}, $$\n\n"
+        "故由柯西准则可知极限为零。\n\n"
+        "9. 用积分判别法讨论下列级数的敛散性：\n\n"
+        "(1) $\\sum \\frac{1}{n^2+1}$。\n"
+    )
+    exs = split_exercises(damaged_display_math, check_section_end=False)
+    check(
+        "OCR 多余显示公式定界符后仍切出递增的自然语言题号",
+        [item["number"] for item in exs] == ["8", "9"]
+        and exs[1]["content"].startswith("用积分判别法")
+        and "\\sum" in exs[1]["content"],
+    )
     e = split_exercises("1. 题目\n\n解 由题意可知…\n")[0]
     check("解+空格切分", e.get("solution_steps", "").startswith("由题意"))
     e = split_exercises("1. 求方程通解。\n\n解答. 将原方程变形为\n\n$$y=x+C$$\n")[0]
@@ -133,7 +160,7 @@ def test_unit_boundaries() -> None:
         book_proofs[0]["content"] == "证明：结论一。"
         and book_proofs[0]["solution_steps"] == "过程一。"
         and book_proofs[1]["content"] == "证明：结论二。"
-        and book_proofs[1]["solution_steps"] == "过程二。",
+        and book_proofs[1]["solution_steps"] == "*法1* 过程二。",
     )
     check(
         "习题集题尾证明标记为证明题",
@@ -236,6 +263,21 @@ def test_toc_and_boundaries() -> None:
     sections = build_section_tree(toc, doc_type="textbook", doc_page_count=500)
     check("罗马数字页码不崩溃", len(sections) >= 1)
 
+    terminal_exercise_toc = [{
+        "title": "第一章 函数",
+        "page_num": 1,
+        "children": [{"title": "习题1-1", "page_num": 8, "children": []}],
+    }]
+    terminal_sections = build_section_tree(
+        terminal_exercise_toc, doc_type="textbook", doc_page_count=10
+    )
+    terminal_exercise = terminal_sections[0]["children"][0]
+    check(
+        "末尾习题节点无后续目录边界仍生成",
+        terminal_exercise["exercise_page_range"] == [8, 11]
+        and terminal_exercise.get("boundary_title") is None,
+    )
+
     no_toc = exercise_book.build_exercise_book_sections([], 100)
     check(
         "习题集无目录→整本节点",
@@ -300,6 +342,165 @@ def test_toc_and_boundaries() -> None:
     check(
         "习题目录已覆盖→关闭节尾搜索",
         not should_use_tail_search(toc_has_ex, "textbook"),
+    )
+
+
+def test_solution_format_normalization() -> None:
+    from exercise_extractor.parse_md_exercises import (
+        split_exercises,
+        split_solutions_for_section,
+    )
+    from exercise_extractor.postprocess import render_exercise_markdown
+    from exercise_extractor.review import review_basic
+
+    proof = split_exercises(
+        "*1.* 证明函数连续。\n\n**证**: 由定义可得函数连续。",
+        split_solutions=False,
+    )
+    split_solutions_for_section(proof, "习题", force=True)
+    proof_markdown = render_exercise_markdown({
+        "title": "习题",
+        "has_exercise": True,
+        "children": [],
+        "exercises": proof,
+    })
+    check(
+        "标准 **证** 标记拆入证明题解答并保留证明题型",
+        proof[0]["solution_steps"] == "由定义可得函数连续。"
+        and proof[0].get("question_type") == "proof"
+        and "**证**: 由定义可得函数连续。" in proof_markdown,
+    )
+
+    variants = split_exercises(
+        "*1.* 求 $x$。\n\n解法1：代入条件得 $x=2$。\n\n"
+        "解法2：由图像可知 $x=2$。",
+        split_solutions=False,
+    )
+    split_solutions_for_section(variants, "习题", force=True)
+    check(
+        "多个解法保存在同一道题并规范化为法1法2",
+        len(variants) == 1
+        and variants[0]["solution_steps"]
+        == "*法1* 代入条件得 $x=2$。\n\n*法2* 由图像可知 $x=2$。",
+    )
+
+    matched = {
+        "exercises": [
+            {
+                "number": "1",
+                "question": "证明函数连续。",
+                "solution_steps": "**证**: 由定义可得函数连续。",
+                "answer": "",
+            },
+            {
+                "number": "2",
+                "question": "求 $x$。",
+                "solution_steps": "解法1：代入条件得 $x=2$。\n\n解法2：由图像可知 $x=2$。",
+                "answer": "",
+            },
+        ]
+    }
+    client = Mock()
+    client.chat.completions.create.side_effect = [
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(matched, ensure_ascii=False), tool_calls=[]))]),
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(matched, ensure_ascii=False), tool_calls=[]))]),
+    ]
+    section = {
+        "document_name": "证明题与多解法",
+        "title": "习题",
+        "path": "习题",
+        "has_exercise": True,
+        "content": {"original": ""},
+        "exercises": [
+            # The OCR metadata may misclassify the question; an explicit **证**
+            # marker returned by review must be allowed to correct it.
+            {"number": "1", "content": "证明函数连续。", "question_type": "short_answer"},
+            {"number": "2", "content": "求 $x$。", "question_type": "short_answer"},
+        ],
+    }
+    reviewed = review_basic(section, source_markdown="当前手工编辑稿", client=client)
+    visible = reviewed["content"]["basic_review"]
+    check(
+        "两轮 LLM 审校将证明和多个解法规范化到标准 Markdown",
+        "**证**: 由定义可得函数连续。" in visible
+        and "**解**: *法1* 代入条件得 $x=2$。\n\n*法2* 由图像可知 $x=2$。" in visible
+        and len(reviewed["exercises"]) == 2
+        and reviewed["exercises"][0]["question_type"] == "proof"
+        and reviewed["exercises"][1]["solution_steps"].count("*法") == 2,
+    )
+
+
+def test_review_does_not_invent_answer_for_proof() -> None:
+    from exercise_extractor.review import review_basic
+
+    source = "1. 证明函数连续。\n\n**证**: 由定义可知函数连续，因此结论成立。"
+    fabricated = {
+        "exercises": [{
+            "number": "1",
+            "question": "证明函数连续。",
+            "solution_steps": "由定义可知函数连续，因此结论成立。",
+            "answer": "函数连续。",
+        }]
+    }
+    client = Mock()
+    client.chat.completions.create.side_effect = [
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(fabricated, ensure_ascii=False), tool_calls=[]))]),
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(fabricated, ensure_ascii=False), tool_calls=[]))]),
+    ]
+    section = {
+        "document_name": "证明题",
+        "title": "习题",
+        "path": "习题",
+        "has_exercise": True,
+        "content": {"original": ""},
+        "exercises": [{
+            "number": "1",
+            "content": "证明函数连续。",
+            "question_type": "proof",
+        }],
+    }
+    reviewed = review_basic(section, source_markdown=source, client=client)
+    visible = reviewed["content"]["basic_review"]
+    check(
+        "证明过程末尾不被复制成额外答案",
+        reviewed["exercises"][0]["solution_steps"] == "由定义可知函数连续，因此结论成立。"
+        and reviewed["exercises"][0]["answer"] == ""
+        and "**证**:" in visible
+        and "**答**:" not in visible,
+    )
+
+
+def test_solution_marker_before_parenthesized_subquestion() -> None:
+    from exercise_extractor.parse_md_exercises import split_exercises
+    from exercise_extractor.review.basic_review import _remove_unexpected_answer_segments
+
+    source = (
+        "*1.* 求五个级数的和。\n\n"
+        "解(1) 第一小问的解答。\n\n"
+        "(2) 第二小问的解答。\n\n"
+        "(3) 第三小问的解答。"
+    )
+    parsed = split_exercises(source, check_section_end=False)
+    protected, removed = _remove_unexpected_answer_segments(
+        source,
+        "*1.* 求五个级数的和。\n\n**解**: (1) 第一小问的解答。\n\n"
+        "(2) 第二小问的解答。\n\n(3) 第三小问的解答。",
+        allow_relocation=True,
+    )
+    check(
+        "解(1) 可识别为整题解答起点并保留后续小问",
+        len(parsed) == 1
+        and parsed[0]["content"] == "求五个级数的和。"
+        and parsed[0]["solution_steps"]
+        == "(1) 第一小问的解答。\n\n(2) 第二小问的解答。\n\n(3) 第三小问的解答。",
+    )
+    check(
+        "单题的括号小问不会被答案保护逻辑误拆或删除",
+        removed == 0
+        and all(
+            part in protected
+            for part in ("(1) 第一小问的解答。", "(2) 第二小问的解答。", "(3) 第三小问的解答。")
+        ),
     )
 
 
@@ -1419,7 +1620,7 @@ def test_review_reassigns_existing_answers() -> None:
     check("整节审校可重分配已有解答", result["exercises"][0]["solution_steps"] == "第一题的已有过程。"
           and result["exercises"][1]["solution_steps"] == "（2）第二题的已有过程，含 $\\int_0^1 x\\,dx$。")
     check("重拆保留题号、公式与粗体解标记", "*1.*" in visible and "*2.*" in visible
-          and "**解**：" in visible and r"\int_0^1 x\,dx" in visible)
+          and "**解**:" in visible and r"\int_0^1 x\,dx" in visible)
     check("整节审校移除模型新编答案", "模型新编的答案" not in visible)
     check("按题号保留各题页码与题型", result["exercises"][0]["pages"] == [11]
           and result["exercises"][1]["pages"] == [12]
@@ -1640,7 +1841,7 @@ def test_single_review_restores_missing_solution_from_reference() -> None:
         len(result) == 1
         and "将原方程变形为" in result[0]["solution_steps"]
         and "$$y'=x$$" in result[0]["solution_steps"]
-        and result[0]["answer"] == "$$x^2/2+C$$",
+        and result[0]["answer"] == "",
     )
 
 
@@ -1821,18 +2022,60 @@ def test_raw_ocr_review_matches_then_formats_as_structured_exercises() -> None:
         ),
     )
     check(
-        "第二轮按题干解答最终答案分别落字段",
+        "第二轮不从解答过程复制最终答案",
         [item["content"] for item in result["exercises"]] == ["求 $x$。", "求 $y$。"]
-        and [item["answer"] for item in result["exercises"]] == ["$2$", "$3$"]
+        and [item["answer"] for item in result["exercises"]] == ["", ""]
         and result["exercises"][0]["solution_steps"] == "由条件得 $x = 2$。",
     )
     check(
         "编辑用 Markdown 只含规范解答标签",
-        visible.count("**解**：") == 2
-        and visible.count("**答**：") == 2
+        visible.count("**解**:") == 2
+        and visible.count("**答**:") == 0
         and "解答:" not in visible
         and "<!-- page:" not in visible
         and "评阅人" not in visible,
+    )
+
+
+def test_section_review_recovers_explicit_numbered_boundary() -> None:
+    """即使原始分割受损，整节审校仍按原文明确题号接纳新增的题目。"""
+    from exercise_extractor.api import reparse_exercises
+    from exercise_extractor.review import review_basic
+
+    source = (
+        "*10.* 证明前一题。\n\n**证**: 前一题的证明。\n\n"
+        "$$x=1 $$ + $$\n\n"
+        "11\\. 关于数列，证明其收敛。\n\n**证**: 第十一题的证明。\n\n"
+        "*12.* 证明后一题。\n\n**证**: 后一题的证明。"
+    )
+    section = reparse_exercises({
+        "document_name": "测试习题册",
+        "title": "习题",
+        "path": "习题",
+        "has_exercise": True,
+        "content": {"original": source},
+        "exercises": [],
+    }, source)
+    check("损坏公式状态使原始分割漏掉题号", [item["number"] for item in section["exercises"]] == ["10", "12"])
+
+    reviewed_json = {"exercises": [
+        {"number": "10", "question": "证明前一题。", "solution_steps": "前一题的证明。\n\n$$x=1 $$ + $$", "answer": ""},
+        {"number": "11", "question": "关于数列，证明其收敛。", "solution_steps": "第十一题的证明。", "answer": ""},
+        {"number": "12", "question": "证明后一题。", "solution_steps": "后一题的证明。", "answer": ""},
+    ]}
+    client = Mock()
+    client.chat.completions.create.side_effect = [
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(reviewed_json, ensure_ascii=False), tool_calls=[]))])
+        for _ in range(2)
+    ]
+
+    result = review_basic(section, source_markdown=source, client=client)
+    check(
+        "整节两轮审校接纳原文中的独立题号并正确归属证明",
+        [item["number"] for item in result["exercises"]] == ["10", "11", "12"]
+        and "第十一题的证明" in result["exercises"][1]["solution_steps"]
+        and "第十一题" not in result["exercises"][0]["solution_steps"]
+        and "*11.*" in result["content"]["basic_review"],
     )
 
 
@@ -1875,7 +2118,45 @@ def test_single_question_raw_ocr_solution_survives_review() -> None:
         and len(reviewed) == 1
         and "将原方程变形为" in reviewed[0]["solution_steps"]
         and r"\frac{1}{\cos y}" in reviewed[0]["solution_steps"]
-        and r"\frac{x+C}{\ln x}" in reviewed[0]["answer"],
+        and reviewed[0]["answer"] == "",
+    )
+
+
+def test_single_review_restores_truncated_numbered_solution() -> None:
+    from exercise_extractor.review import review_basic_exercise
+    from exercise_extractor.api import reparse_exercises
+
+    original_solution = "\n\n".join(
+        f"({number}) 第{number}小问的完整解答，计算结果为 ${number}+1={number + 1}$。"
+        for number in range(1, 6)
+    )
+    question = (
+        "证明下列级数的收敛性，并求其和数：(1) 第一题；(2) 第二题；"
+        "(3) 第三题；(4) 第四题；(5) 第五题。"
+    )
+    markdown = f"*1.* {question}\n\n解{original_solution}"
+    section = {
+        "document_name": "级数习题",
+        "title": "习题",
+        "path": "习题",
+        "has_exercise": True,
+        "content": {"original": markdown},
+        "exercises": [],
+    }
+    section = reparse_exercises(section, markdown)
+    truncated = (
+        f"*1.* {question}\n\n"
+        "**解**: (1) 第1小问的完整解答，计算结果为 $1+1=2$。"
+    )
+    client = Mock()
+    client.chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=truncated, tool_calls=[]))]
+    )
+
+    reviewed = review_basic_exercise(section, [0], client=client)
+    check(
+        "单题审校发现小问解答被截断时保留原文全部步骤",
+        len(reviewed) == 1 and reviewed[0]["solution_steps"] == original_solution,
     )
 
 
@@ -1883,12 +2164,12 @@ def test_review_wraps_unmarked_latex_answer_in_dollars() -> None:
     """LLM 漏写公式定界符时，最终题目 JSON 和 Markdown 都补齐。"""
     from exercise_extractor.review import review_basic
 
-    source = "1. 求积分值。\n\n解答. 计算后得到结果。"
+    source = "1. 求积分值。\n\n答案: \\frac{3}{2}"
     result_json = {
         "exercises": [{
             "number": "1",
             "question": "求积分值。",
-            "solution_steps": "计算后得到结果。",
+            "solution_steps": "",
             "answer": r"\frac{3}{2}",
         }]
     }
@@ -1909,7 +2190,7 @@ def test_review_wraps_unmarked_latex_answer_in_dollars() -> None:
     check(
         "裸 LaTeX 答案被补成行内公式",
         result["exercises"][0]["answer"] == r"$\frac{3}{2}$"
-        and r"**答**：$\frac{3}{2}$" in result["content"]["basic_review"],
+        and r"**答**: $\frac{3}{2}$" in result["content"]["basic_review"],
     )
 
 
@@ -1933,7 +2214,7 @@ def test_display_math_is_rendered_as_a_standalone_block() -> None:
     )
     check(
         "答案标签与块级公式分行输出",
-        "**答**：\n\n$$\\frac{3}{2}$$" in rendered,
+        "**答**:\n\n$$\\frac{3}{2}$$" in rendered,
     )
 
 
@@ -1955,8 +2236,8 @@ def test_exercise_markdown_renderer_separates_display_math_from_labels() -> None
     )
     check(
         "通用习题 Markdown 渲染器将块公式移到标签下一行",
-        "**解**：\n\n$$x=1$$" in rendered
-        and "**答**：\n\n$$y=2$$" in rendered,
+        "**解**:\n\n$$x=1$$" in rendered
+        and "**答**:\n\n$$y=2$$" in rendered,
     )
 
 
@@ -2065,7 +2346,7 @@ def test_cli_review_skips_answer_nodes() -> None:
     check("CLI 默认只执行基础审校并跳过答案节点", calls == ["basic"])
     check(
         "审校内容包含答案",
-        sections[0]["content"]["original"].endswith("**答**：$1$\n\n"),
+        sections[0]["content"]["original"].endswith("**答**: $1$\n\n"),
     )
     check(
         "工具审校关闭时最终版本使用基础审校",

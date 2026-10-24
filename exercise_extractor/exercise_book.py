@@ -158,7 +158,8 @@ def _extract_no_toc(content: str) -> list[Exercise]:
         )
         for item in items:
             item["section"] = current_heading
-            item["question_type"] = "short_answer"
+            if item.get("question_type") != "proof":
+                item["question_type"] = "short_answer"
         _renumber(items)
         exercises.extend(items)
 
@@ -215,7 +216,8 @@ def extract_exercises(sections: list[SectionNode]) -> None:
                 attach_figures(exercises, figures)
                 convert_exercise_tables(exercises)
                 for item in exercises:
-                    item["question_type"] = "short_answer"
+                    if item.get("question_type") != "proof":
+                        item["question_type"] = "short_answer"
                 split_solutions_for_section(
                     exercises, node.get("title"), doc_type="exercise_book"
                 )

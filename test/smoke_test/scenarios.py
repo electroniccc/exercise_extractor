@@ -65,7 +65,7 @@ def test_textbook_fake_cache() -> None:
             text = f.read()
         check(
             "md 输出含解/答",
-            "**解**：解答一" in text and "**答**：答案二" in text,
+            "**解**: 解答一" in text and "**答**: 答案二" in text,
         )
         with open(os.path.join(outdir, "1_习题_1-1.json"), encoding="utf-8") as f:
             data = json.load(f)

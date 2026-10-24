@@ -37,7 +37,7 @@ class Exercise(TypedDict, total=False):
     solution_steps: str
 
 # 题号后常见分隔符：半角句点 / 全角句点 / 顿号 / 半角右括号 / 全角右括号（捕获组）
-_NUMBER_SEPARATOR = r"([.．、)）])"
+_NUMBER_SEPARATOR = r"\\?([.．、)）])"
 # 行首可能出现的 LaTeX/OCR 噪声前缀（星号、上下标标记、数学定界符等），
 # 任何教材的 OCR 输出都可能带这类符号；只允许它们存在、不要求必须有。
 _EXERCISE_JUNK = r"[*^{}\s$]*"
@@ -113,25 +113,40 @@ EXERCISE_HEADING_RE = re.compile(
     r"(求(?![导])|设|证明|判断|计算|试|若|已知|利用|推导|导出|指出|写出|说明|确定|讨论|"
     r"解(?![析答应决释])|化简|展开|验证|应用|找出|建立|问|求解)"
 )
+# 当 OCR 损坏了显示公式定界符时，递增的普通题号仍可能出现在公式状态中。
+# 只有题号后跟常见题目指令/动词时才允许恢复，避免把公式中的编号当成新题。
+_EXERCISE_PROMPT_START_RE = re.compile(
+    r"^(?:求|设|证明|试|若|已知|用|利用|判断|计算|讨论|确定|说明|写出|指出|"
+    r"推导|导出|验证|应用|求出|求证|解释|比较|列出|find|prove|show|use|"
+    r"let|assume|suppose|determine|evaluate|calculate|discuss|verify|explain|"
+    r"compare|state|write|derive)",
+    re.IGNORECASE,
+)
 # 题干后的答案段：行首“答”开头（答：/答:/答/[答]/（答）/(答)），该行起到题目
 # 结束都是答案。裸“答”分支用负向断言排除“答案/答题/答 案”等非答案段字样。
 ANSWER_START_RE = re.compile(
     r"^\s*(?:"
     r"\*\*\s*答\s*\*\*[：:]?"
     r"|"
+    r"答案[：:]"
+    r"|"
     r"[\[（(]\s*答\s*[\])）)][：:]?"
     r"|答(?!\s*[\u4e00-\u9fff])[：:]?"
     r")\s*"
 )
-# 解答过程段：行首“解：”/“解.”/“解．”/“[解]”/“（解）”/(解) 开头。
-# “解”后必须是冒号/句号/空白（避免把“解析/解决/解释/解得”等正文字样误判），
-# 带括号的写法本身无歧义。
+# 解答过程段：行首“解：”/“解.”/“解（1）”/“[解]”等形式开头。
+# 普通“解”后必须是冒号/句号/空白，或紧跟括号小题号，避免误判“解析/解决/解得”。
 SOLUTION_START_RE = re.compile(
     r"^\s*(?:"
+    r"\*\*\s*解法\s*[一二三四五六七八九十\d]*\s*\*\*[：:]?"
+    r"|"
     r"\*\*\s*解\s*\*\*[：:]?"
+    r"|"
+    r"解\s*(?=[（(]\s*\d{1,3}\s*[）)])"
     r"|"
     r"[\[（(]\s*解\s*[\])）)][：:]?"
     r"|解答[：:.．]"
+    r"|解法\s*[一二三四五六七八九十\d]*[：:.．\s]"
     r"|解[：:.．\s]"
     r")\s*"
 )
@@ -139,11 +154,49 @@ SOLUTION_START_RE = re.compile(
 # 证法标题常用于习题集的多种解法，必须和普通证明标记一样参与分离。
 PROOF_START_RE = re.compile(
     r"^\s*(?:"
+    r"\*\*\s*(?:证明|证)\s*\*\*[：:]?"
+    r"|"
     r"证法\s*[一二三四五六七八九十\d]+\s*[.．：:]?"
     r"|证明(?!题)(?:[.．：:]|\s|(?=[\u4e00-\u9fff]))"
     r"|证(?!明)(?:[.．：:]|\s|(?=[\u4e00-\u9fff]))"
     r")\s*"
 )
+
+_SOLUTION_METHOD_LABEL_RE = re.compile(
+    r"^([ \t]*)(?:\*\*\s*)?(?:解法|证法)\s*([一二三四五六七八九十\d]+)"
+    r"\s*(?:\*\*)?\s*[：:、.．]?\s*"
+)
+_CHINESE_METHOD_NUMBERS = {
+    "一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
+    "六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
+    "十一": 11, "十二": 12, "十三": 13, "十四": 14,
+    "十五": 15, "十六": 16, "十七": 17, "十八": 18,
+    "十九": 19, "二十": 20,
+}
+
+
+def normalize_solution_method_labels(content: str) -> str:
+    """把“解法1/证法一”等方法标题统一成同一道题内的斜体法号。"""
+    def replace(match: re.Match[str]) -> str:
+        raw_number = match.group(2)
+        number = str(_CHINESE_METHOD_NUMBERS.get(raw_number, raw_number))
+        return f"{match.group(1)}*法{number}* "
+
+    return re.sub(r"(?m)^.*$", lambda line: _SOLUTION_METHOD_LABEL_RE.sub(replace, line.group(0)), content)
+
+
+def split_solution_method_block(content: str) -> tuple[str, str | None]:
+    """把题干后的多个解法标题整块切出，并保留规范化后的每个法号。"""
+    lines = content.split("\n")
+    first_nonblank = next((i for i, line in enumerate(lines) if line.strip()), None)
+    for index, line in enumerate(lines):
+        if index == first_nonblank or not _SOLUTION_METHOD_LABEL_RE.match(line):
+            continue
+        question = "\n".join(lines[:index]).strip()
+        methods = normalize_solution_method_labels("\n".join(lines[index:])).strip()
+        if question:
+            return question, methods
+    return content.strip(), None
 
 
 def page_marker(page_num: int) -> str:
@@ -372,21 +425,41 @@ def _split_solution(
     其余情况交给“解”标记的通用切分。
     """
     lines = content.split("\n")
+    first_nonblank = next((i for i, line in enumerate(lines) if line.strip()), None)
+
+    # **解**/**证** 是规范化后的明确分隔符，优先处理，之后的法1/法2标题
+    # 作为同一道题的一个 solution_steps 字段保留。
+    for index, line in enumerate(lines):
+        if index == first_nonblank:
+            continue
+        if SOLUTION_START_RE.match(line) and not _SOLUTION_METHOD_LABEL_RE.match(line):
+            head = "\n".join(lines[:index]).strip()
+            rest = normalize_solution_method_labels("\n".join(lines[index:]))
+            return head, SOLUTION_START_RE.sub("", rest, count=1).strip()
+        if re.match(r"^\s*\*\*\s*(?:证明|证)\s*\*\*", line):
+            head = "\n".join(lines[:index]).strip()
+            rest = PROOF_START_RE.sub("", "\n".join(lines[index:]), count=1)
+            return head, normalize_solution_method_labels(rest).strip()
+
+    method_question, method_solution = split_solution_method_block(content)
+    if method_solution:
+        return method_question, method_solution
+
     proof_idxs = [i for i, l in enumerate(lines) if PROOF_START_RE.match(l)]
     if len(proof_idxs) >= 2:
         i = proof_idxs[-1]
         head = "\n".join(lines[:i]).strip()
         if head:
             rest = PROOF_START_RE.sub("", "\n".join(lines[i:]), count=1).strip()
-            return head, rest
+            return head, normalize_solution_method_labels(rest).strip()
     if len(proof_idxs) == 1 and allow_single_proof:
-        first_nonblank = next((i for i, l in enumerate(lines) if l.strip()), None)
         if proof_idxs[0] != first_nonblank:
             i = proof_idxs[0]
             head = "\n".join(lines[:i]).strip()
             rest = PROOF_START_RE.sub("", "\n".join(lines[i:]), count=1).strip()
-            return head, rest
-    return split_at_line_marker(content, SOLUTION_START_RE, allow_first_line=False)
+            return head, normalize_solution_method_labels(rest).strip()
+    head, solution = split_at_line_marker(content, SOLUTION_START_RE, allow_first_line=False)
+    return head, normalize_solution_method_labels(solution).strip() if solution else None
 
 
 _EXAMPLE_SECTION_RE = re.compile(
@@ -516,7 +589,7 @@ def split_solutions_for_section(
             )
             item["content"] = content
             item["solution_steps"] = solution or ""
-            if doc_type == "exercise_book" and proof_solution and solution:
+            if proof_solution and solution:
                 item["question_type"] = "proof"
         else:
             item["content"] = content
@@ -580,6 +653,21 @@ def _advance_display_math_state(line: str, in_display_math: bool) -> bool:
         else:  # ``\]``
             in_display_math = False
     return in_display_math
+
+
+def _starts_next_question_inside_display_math(
+    line: str, previous_number: tuple[int, ...]
+) -> bool:
+    """识别被 OCR 多余公式定界符吞掉的、明显递增的普通题目行。"""
+    if len(previous_number) != 1:
+        return False
+    match = EXERCISE_NUM_RE.match(line)
+    if match is None or int(match.group(1)) <= previous_number[0]:
+        return False
+    remainder = line[match.end() :].lstrip("*$ \t")
+    return line.lstrip().startswith("*") or bool(
+        _EXERCISE_PROMPT_START_RE.match(remainder)
+    )
 
 
 def _heading_is_ocr_number(
@@ -697,8 +785,18 @@ def split_exercises(
 
         # 显示公式内的数字（尤其是 74.000、1.001 等）绝不是题号。公式可以
         # 单行闭合，也可以跨多行；在块内仅原样归入当前题目。
-        is_display_math_line = in_display_math or bool(
-            DISPLAY_MATH_START_RE.match(line)
+        recover_question_boundary = (
+            in_display_math
+            and not DISPLAY_MATH_START_RE.match(line)
+            and _starts_next_question_inside_display_math(line, prev_key)
+        )
+        if recover_question_boundary:
+            # OCR 偶尔在公式内部插入多余的 ``$$``，导致后续所有行都被当成
+            # 公式。递增题号加题目指令是足够强的边界信号，重置状态后正常解析。
+            in_display_math = False
+        is_display_math_line = (
+            (in_display_math and not recover_question_boundary)
+            or bool(DISPLAY_MATH_START_RE.match(line))
         )
         if is_display_math_line:
             if not exercises and current_num is None:

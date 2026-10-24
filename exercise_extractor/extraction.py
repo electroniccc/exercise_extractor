@@ -302,7 +302,7 @@ def build_section_tree(
                 end_page = max(end_page, start_page + 1)
                 result["has_exercise"] = True
                 result["exercise_page_range"] = [start_page, end_page]
-                result["boundary_title"] = boundary.get("title")
+                result["boundary_title"] = boundary.get("title") if boundary else None
                 if boundary and isinstance(boundary.get("page_num"), int):
                     result["boundary_page"] = boundary["page_num"]
         if "children" in node and len(node["children"]) > 0:
@@ -553,7 +553,8 @@ def extract_exercises(
                     item["section"] = fallback
                 # 课本没有像试卷那样的题型小节，统一按简答题处理，
                 # 使三类输入的习题 JSON 至少共享 question_type 字段。
-                item["question_type"] = "short_answer"
+                if item.get("question_type") != "proof":
+                    item["question_type"] = "short_answer"
             # 题号统一为按顺序排列的单个数字（1,2,3...），
             # 原题号（可能是多级如 1.1.7）保留在 original_number 供对照
             seq = 0
