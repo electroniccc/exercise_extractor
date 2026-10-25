@@ -504,6 +504,29 @@ def test_solution_marker_before_parenthesized_subquestion() -> None:
     )
 
 
+def test_numbered_solution_steps_do_not_become_exercises() -> None:
+    from exercise_extractor.parse_md_exercises import split_exercises
+
+    markdown = (
+        "*1.* 第一题。\n\n"
+        "*2.* 求曲面面积。\n\n"
+        "**解**: 1. 由定义得到投影区域。\n"
+        "2. 锥面取偏导数。\n"
+        "3. 求面积元因子 $\\sqrt{2}$。\n"
+        "4. 计算面积 $2\\pi$。\n\n"
+        "*3.* 求均匀薄板重心。\n\n"
+        "**解**: 根据对称性计算。"
+    )
+    parsed = split_exercises(markdown, check_section_end=False)
+    check(
+        "解答中的数字步骤不吞并下一道题",
+        len(parsed) == 3
+        and parsed[1]["content"] == "求曲面面积。"
+        and "3. 求面积元因子" in parsed[1]["solution_steps"]
+        and parsed[2]["content"] == "求均匀薄板重心。",
+    )
+
+
 def test_answers_match() -> None:
     import exercise_extractor.answers as answers
 
@@ -2160,6 +2183,186 @@ def test_single_review_restores_truncated_numbered_solution() -> None:
     )
 
 
+def test_single_review_recovers_unmarked_solution_in_question() -> None:
+    from exercise_extractor.review import review_basic_exercise
+
+    question = r"试将 $f(x)=\ln x$ 按 $\frac{x-1}{x+1}$ 的幂展开成幂级数。"
+    derivation = (
+        "由于令 $t=\\frac{x-1}{x+1}$，于是\n\n"
+        "$$\\ln x=2\\sum_{n=0}^{\\infty}\\frac{t^{2n+1}}{2n+1}.$$\n\n"
+        "所以收敛域为 $x>0$。"
+    )
+    section = {
+        "document_name": "级数习题",
+        "title": "习题",
+        "path": "习题",
+        "has_exercise": True,
+        "exercises": [{
+            "number": "5", "content": f"{question}\n\n解{derivation}",
+            "solution_steps": "", "answer": "", "question_type": "short_answer",
+        }],
+    }
+    client = Mock()
+    client.chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(
+            content=f"*5.* {question}", tool_calls=[],
+        ))]
+    )
+    reviewed = review_basic_exercise(section, [0], client=client)
+    check(
+        "单题审校保留题干中无标点解答并移入解题步骤",
+        len(reviewed) == 1
+        and reviewed[0]["content"] == question
+        and reviewed[0]["solution_steps"] == derivation
+        and reviewed[0]["answer"] == "",
+    )
+
+    client.chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(
+            content=f"*5.* {question}\n\n**解**: {derivation}", tool_calls=[],
+        ))]
+    )
+    normalized = review_basic_exercise(section, [0], client=client)
+    check(
+        "原始解答字段为空时仍拆出模型规范化的解答",
+        len(normalized) == 1
+        and normalized[0]["content"] == question
+        and normalized[0]["solution_steps"] == derivation,
+    )
+
+
+def test_unpunctuated_solution_starting_with_action_verb() -> None:
+    from exercise_extractor.parse_md_exercises import split_exercises
+    from exercise_extractor.review import review_basic_exercise
+    from exercise_extractor.review.basic_review import _remove_unexpected_answer_segments
+
+    question = "把 $\\Omega$ 上的 $n$ 重积分化为单重积分。"
+    solution = (
+        "作n维球坐标变换\n\n"
+        "$$J=r^{n-1}\\sin^{n-2}\\varphi$$\n\n"
+        "因此把角度积分合并，得到单重积分。"
+    )
+    markdown = f"*4.* {question}\n\n解{solution}"
+    parsed = split_exercises(markdown, check_section_end=False)
+    check(
+        "无标点解作留给 AI 审校识别",
+        len(parsed) == 1
+        and "解作n维球坐标变换" in parsed[0]["content"]
+        and parsed[0]["solution_steps"] == "",
+    )
+
+    section = {
+        "document_name": "重积分习题", "title": "习题", "path": "习题", "has_exercise": True,
+        "exercises": [{"number": "4", "content": f"{question}\n\n解{solution}",
+                       "solution_steps": "", "answer": ""}],
+    }
+    client = Mock()
+    client.chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(
+            content=f"*4.* {question}\n\n**解**: {solution}", tool_calls=[],
+        ))]
+    )
+    reviewed = review_basic_exercise(section, [0], client=client)
+    check(
+        "单题审校提示模型拆出解作后的推导",
+        len(reviewed) == 1
+        and reviewed[0]["content"] == question
+        and reviewed[0]["solution_steps"] == solution
+        and reviewed[0]["answer"] == ""
+        and "解作n维球坐标变换" in str(client.chat.completions.create.call_args),
+    )
+    invented = f"*4.* {question}\n\n**解**: {solution}\n\n另加一整段原文没有的推导与结论。"
+    protected, removed = _remove_unexpected_answer_segments(markdown, invented)
+    check("审校不能借规范化解答标记添写新推导", removed == 1 and "另加一整段" not in protected)
+
+    structured = json.dumps({"exercises": [{
+        "number": "4", "question": question,
+        "solution_steps": solution, "answer": "",
+    }]}, ensure_ascii=False)
+    client.chat.completions.create.side_effect = [
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=value, tool_calls=[]))])
+        for value in (markdown, structured, structured)
+    ]
+    recovered = review_basic_exercise(section, [0], client=client)
+    check(
+        "首轮照抄解作时结构化 LLM 兜底拆出解答",
+        client.chat.completions.create.call_count == 4
+        and recovered[0]["content"] == question
+        and recovered[0]["solution_steps"] == solution
+        and recovered[0]["answer"] == "",
+    )
+    unresolved = json.dumps({"exercises": [{
+        "number": "4", "question": f"{question}\n\n解{solution}",
+        "solution_steps": "", "answer": "",
+    }]}, ensure_ascii=False)
+    client.chat.completions.create.side_effect = [
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=value, tool_calls=[]))])
+        for value in (markdown, unresolved, unresolved)
+    ]
+    try:
+        review_basic_exercise(section, [0], client=client)
+    except ValueError as exc:
+        check("两轮模型仍未拆出解答时拒绝误导性候选", "未能从题干分离" in str(exc))
+    else:
+        check("两轮模型仍未拆出解答时拒绝误导性候选", False)
+
+
+def test_ai_review_recovers_solution_marker_inside_display_math() -> None:
+    from exercise_extractor.review import review_basic_exercise
+
+    question = (
+        "若 $L$ 为平面上的正向闭曲线，求\n\n"
+        "$$\\oint_L (x\\,\\mathrm{d}y-y\\,\\mathrm{d}x)$$\n\n"
+        "其中围成区域面积为 $S$。"
+    )
+    embedded = (
+        "$$ \\begin{aligned}& 解 \\quad\\oint_L (x\\,\\mathrm{d}y-y\\,\\mathrm{d}x)"
+        "\\\\&=2\\iint_S\\mathrm{d}S=2S.\\end{aligned} $$\n\n"
+        "这里 $S$ 是平面区域。"
+    )
+    solution = (
+        "$$\n\\begin{aligned}\n\\oint_L (x\\,\\mathrm{d}y-y\\,\\mathrm{d}x)"
+        "\\\\&=2\\iint_S\\mathrm{d}S=2S.\n\\end{aligned}\n$$\n\n"
+        "这里 $S$ 是平面区域。"
+    )
+    markdown = f"*9.* {question}\n\n{embedded}"
+    section = {
+        "document_name": "重积分习题", "title": "习题", "path": "习题", "has_exercise": True,
+        "exercises": [{"number": "9", "content": f"{question}\n\n{embedded}",
+                       "solution_steps": "", "answer": ""}],
+    }
+    structured = json.dumps({"exercises": [{
+        "number": "9", "question": question,
+        "solution_steps": solution, "answer": "",
+    }]}, ensure_ascii=False)
+    client = Mock()
+    client.chat.completions.create.side_effect = [
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=value, tool_calls=[]))])
+        for value in (markdown, structured, structured)
+    ]
+    reviewed = review_basic_exercise(section, [0], client=client)
+    check(
+        "公式块内的解触发结构化审校且保留完整公式",
+        client.chat.completions.create.call_count == 3
+        and reviewed[0]["content"] == question
+        and r"\iint_S" in reviewed[0]["solution_steps"]
+        and "这里 $S$ 是平面区域。" in reviewed[0]["solution_steps"]
+        and "解" not in reviewed[0]["content"].split("其中围成区域面积为 $S$。")[-1],
+    )
+    client.chat.completions.create.reset_mock()
+    client.chat.completions.create.side_effect = [
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=value, tool_calls=[]))])
+        for value in (f"*9.* {question}\n\n**解**:\n\n{embedded}", structured, structured)
+    ]
+    reviewed = review_basic_exercise(section, [0], client=client)
+    check(
+        "仅添解答标签但公式内仍留解字时继续结构化审校",
+        client.chat.completions.create.call_count == 3
+        and r"\iint_S" in reviewed[0]["solution_steps"]
+        and "& 解" not in reviewed[0]["solution_steps"],
+    )
+
+
 def test_review_wraps_unmarked_latex_answer_in_dollars() -> None:
     """LLM 漏写公式定界符时，最终题目 JSON 和 Markdown 都补齐。"""
     from exercise_extractor.review import review_basic
@@ -2215,6 +2418,48 @@ def test_display_math_is_rendered_as_a_standalone_block() -> None:
     check(
         "答案标签与块级公式分行输出",
         "**答**:\n\n$$\\frac{3}{2}$$" in rendered,
+    )
+
+
+def test_review_normalizes_unsupported_displaylimits() -> None:
+    from exercise_extractor.review.basic_review import _normalize_math_delimiters
+
+    source = (
+        r"$$\iint\displaylimits_D f(x,y)\,\mathrm{d}x\mathrm{d}y"
+        r"=2\int\displaylimits_{-1}^{1}f(u)\,\mathrm{d}u$$"
+    )
+    normalized = _normalize_math_delimiters(source)
+    check(
+        "审校将不受 KaTeX 支持的 displaylimits 转为可渲染的积分上下限",
+        r"\iint\limits_D" in normalized
+        and r"\int\limits_{-1}^{1}" in normalized
+        and r"\displaylimits" not in normalized,
+    )
+
+    from exercise_extractor.review import review_basic_exercise
+
+    solution = (
+        r"$$\iint\displaylimits_D f\,\mathrm{d}S"
+        r"=2\int\displaylimits_{-1}^{1}f(u)\,\mathrm{d}u$$"
+        + "\n\n" + "逐步代换并保留原有推导。" * 12
+    )
+    section = {
+        "document_name": "积分习题", "title": "习题", "path": "习题", "has_exercise": True,
+        "exercises": [{"number": "6", "content": "证明公式。",
+                       "solution_steps": solution, "answer": ""}],
+    }
+    client = Mock()
+    client.chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(
+            content="*6.* 证明公式。\n\n**证**: 逐步代换。", tool_calls=[],
+        ))]
+    )
+    reviewed = review_basic_exercise(section, [0], client=client)
+    check(
+        "模型截断时恢复原始长解答后仍规范积分命令",
+        r"\iint\limits_D" in reviewed[0]["solution_steps"]
+        and r"\displaylimits" not in reviewed[0]["solution_steps"]
+        and "逐步代换并保留原有推导。" in reviewed[0]["solution_steps"],
     )
 
 

@@ -122,6 +122,8 @@ _EXERCISE_PROMPT_START_RE = re.compile(
     r"compare|state|write|derive)",
     re.IGNORECASE,
 )
+_EXPLICIT_MARKDOWN_EXERCISE_RE = re.compile(r"^\s*\*{1,2}\d{1,3}(?:[.．、)）]|[—\-~～〜]\d{1,3}[.．、)）])\*{1,2}")
+_ESCAPED_EXERCISE_NUMBER_RE = re.compile(r"^\s*\d{1,3}\\[.．、)）]")
 # 题干后的答案段：行首“答”开头（答：/答:/答/[答]/（答）/(答)），该行起到题目
 # 结束都是答案。裸“答”分支用负向断言排除“答案/答题/答 案”等非答案段字样。
 ANSWER_START_RE = re.compile(
@@ -750,6 +752,9 @@ def split_exercises(
     in_display_math = False
     chapter_prefix: int | None = None
     previous_was_range_number = False
+    in_solution = False
+    current_marker_explicit = False
+    solution_numbered_steps_seen = False
 
     def flush() -> None:
         nonlocal current, current_num, current_sep, current_section
@@ -819,7 +824,20 @@ def split_exercises(
                 prev_key = ()
                 chapter_prefix = None
                 previous_was_range_number = False
+                in_solution = False
+                current_marker_explicit = False
+                solution_numbered_steps_seen = False
                 continue
+
+        solution_marker = SOLUTION_START_RE.match(line)
+        if current_num is not None and (
+            solution_marker
+            or PROOF_START_RE.match(line)
+            or ANSWER_START_RE.match(line)
+        ):
+            in_solution = True
+            if solution_marker and EXERCISE_NUM_RE.match(line[solution_marker.end():]):
+                solution_numbered_steps_seen = True
 
         # 例题编号优先于普通数字编号（“例 1.2 …”）。
         m_example = EXAMPLE_NUM_RE.match(line)
@@ -891,6 +909,17 @@ def split_exercises(
                 and num_key[0] > prev_key[0]
             )
         )
+        if in_solution and num_key is not None and not is_new_exercise:
+            solution_numbered_steps_seen = True
+        if is_new_exercise and in_solution and not (
+            _EXPLICIT_MARKDOWN_EXERCISE_RE.match(line)
+            or _ESCAPED_EXERCISE_NUMBER_RE.match(line)
+            or recover_question_boundary
+            or (not current_marker_explicit and not solution_numbered_steps_seen)
+        ):
+            # 已进入解/证/答后，行首裸数字通常是解题步骤。标准 Markdown
+            # 题号或明确的题目指令仍可开启下一题。
+            is_new_exercise = False
         if is_new_exercise:
             flush()
             if (
@@ -922,6 +951,12 @@ def split_exercises(
             current.append(stripped)
             current_num = label
             current_sep = sep
+            in_solution = False
+            current_marker_explicit = bool(
+                _EXPLICIT_MARKDOWN_EXERCISE_RE.match(line)
+                or _ESCAPED_EXERCISE_NUMBER_RE.match(line)
+            )
+            solution_numbered_steps_seen = False
             prev_key = num_key
             exercise_start_page = current_page
             exercise_end_page = current_page

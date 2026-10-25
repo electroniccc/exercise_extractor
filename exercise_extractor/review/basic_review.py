@@ -62,6 +62,8 @@ BASIC_REVIEW_PROMPT_TEMPLATE = r"""下面是对一个扫描版PDF文档做OCR后
 - 如果原文只有详细解答过程（包括完整证明），answer 必须为空；如果原文只有简短结果，放入 answer，solution_steps 留空。绝不为缺少答案的题求解或从过程推导答案。
 - 保留原题号和题干顺序。每题使用独立的 `*题号.*` 开头；普通解答使用 `**解**:`，证明过程使用 `**证**:`，最终答案使用 `**答**:`。
 - 将“解法/解答”类过程规范为 `**解**`，将“证明/证法”类过程规范为 `**证**`。同一道题的多种解法必须保存在一个解答段中，依次用 `*法1*`、`*法2*` 等分隔；不要把不同解法拆成多道题。
+- OCR 可能把解答起始词与正文粘在一起，例如题干结束后另起一段写“解作n维球坐标变换”或“解由于…”。请结合前后文判断：这里的“解”是已有解答的标记，“作n维球坐标变换”等后续文字、公式和推导都属于同一道题的解题过程。输出时改为独立的 `**解**:` 段，保留“解”后每个字和全部公式；证明过程同理规范为 `**证**:`。不要仅凭出现“解”字就拆分题干。
+- OCR 也可能把独立的“解”误放在公式环境开头，例如 `$$ \begin{aligned}& 解 \quad\oint_L\cdots`。这时“解”是公式外的解答标记；把它移到公式块前成为独立的 `**解**:`，原公式及其后续说明完整放入解答，不要把公式留在题干或删掉。
 - OCR 原文中的 `(1)`、`(2)`、`1)` 等答案编号通常对应题号 `*1.*`、`*2.*`；应按编号逐题归属，并保留答案里的原编号文字。
 - 不能可靠判断答案归属时，保留该段原文及其相对顺序，不要猜测或丢弃。
 - 整理完成后，确保全部原题、公式和已有答案仍在输出中，且没有重复内容。
@@ -148,6 +150,8 @@ MATCH_ANSWERS_PROMPT_TEMPLATE = r"""请整理下面这一节内容，先完成�
 原文中的 (1)、(2) 等题号和答案编号对应同一道题。每一道题都返回 number、question、solution_steps、answer 四个字符串字段：
 - question 只放题干，不放解析、答案或评分表；题号放在 number 字段。
 - solution_steps 放原文已有的推导/证明过程，不包括“解答/证明”等外层标签或独立的最终答案；证明过程仍放在唯一的 solution_steps 字段中。
+- 题干后若出现未加标点的解答开头，例如“解作n维球坐标变换”，应按上下文将“作n维球坐标变换”及后续完整推导、公式移入 solution_steps，question 只保留此前的题目要求；这只是移动已有内容，不能补写推导。
+- 若 OCR 将解答标记放进题干后的独立公式块开头（如 `$$ \begin{aligned}& 解 \quad...`），将“解”视为公式外的标签，整块公式及其后续说明放入 solution_steps；question 在此公式块前结束。保留全部已有公式与说明，不新增推导。
 - 同一道题如有多个解法，将所有方法合并在 solution_steps 字符串中，使用 `*法1*`、`*法2*` 等 Markdown 标记方法边界，不要拆分或丢弃。
 - answer 只放原文明示的独立最终结果，或题目后唯一的简短结果（没有推理步骤时）；不要从解答/证明的末尾复制或推导答案。
 - 若只有最终结果，没有推导，solution_steps 为空；若只有推导/证明过程而没有单独答案，answer 为空。
@@ -161,6 +165,8 @@ MATCH_ANSWERS_PROMPT_TEMPLATE = r"""请整理下面这一节内容，先完成�
 FORMAT_ANSWERS_PROMPT_TEMPLATE = r"""下面是已经匹配好题号、题干、解答过程和最终答案的一节试卷。请做第二轮校对：修正明显 OCR 文字、标点和 LaTeX/KaTeX 公式错误，统一行内 $...$ 与独立 $$...$$ 定界符。
 
 保持 exercises 的题数、题号、顺序和四个字段的职责。question 只放题干，solution_steps 只放原文已有的推导或证明正文（不含外层 `**解**`/`**证**` 标签），answer 只放原文明示的独立最终答案，或题目后唯一的简短结果（没有推理步骤时）。若原文只有解题过程/证明过程，即使过程末尾得出结果，也必须保持 answer 为空；不得从过程复制或推导答案，不得为证明题额外添加“答”。若原文只有简短结果，则将它放入 answer，solution_steps 留空。不能凭题目自行求解，也不能删掉已有推导或答案。
+如果第一轮仍把“解作n维球坐标变换”这类题干后粘连的解答留在 question，必须在本轮把“解”后的已有文字及全部公式移入 solution_steps；保留原有步骤，不添加新步骤或独立答案。
+如果第一轮仍把公式块开头的“解”（如 `$$ \begin{aligned}& 解 \quad...`）留在 question，也必须把“解”移到公式外作为标签，将整块公式及其后续说明移入 solution_steps；不得遗漏原文。
 同一道题存在多个解法时，必须全部保存在同一个 solution_steps 字符串里，并依次用 `*法1*`、`*法2*` 等分隔；不可为不同解法新增 exercise。证明题仍使用同一个 solution_steps 字段，最终 Markdown 外层标签由题目类型规范为 `**证**`。
 question、solution_steps、answer 都是 Markdown 字符串：每个行内数学公式必须用单个 $...$ 包裹，独立公式必须用 $$...$$ 包裹。严禁输出裸 LaTeX；例如 \frac{3}{2} 必须写成 $\frac{3}{2}$。输出 JSON 时只做 JSON 所需的反斜线转义，解码后的 Markdown 仍需保留正确的公式定界符。
 所有 $$...$$ 公式必须独立成段、单独占行，前后各留一个空行；禁止把 $$...$$ 放在中文句子或解答标记的同一行。
@@ -486,6 +492,7 @@ def _remove_unexpected_answer_segments(
     if original_numbers != revised_numbers:
         return revised, 0
     original_kinds = _answer_marker_kinds_by_exercise(original)
+    original_segments = _exercise_segments(original)
     revised_starts = list(_EXERCISE_START_RE.finditer(revised))
     if len(original_kinds) != len(revised_starts):
         return revised, 0
@@ -507,7 +514,28 @@ def _remove_unexpected_answer_segments(
             if expected_index < len(expected) and marker.group(1) == expected[expected_index]:
                 expected_index += 1
             else:
-                unexpected_indexes.add(marker_index)
+                next_marker = markers[marker_index + 1] if marker_index + 1 < len(markers) else None
+                candidate = segment[marker.end() : next_marker.start() if next_marker else len(segment)].strip()
+                source = original_segments[index]
+                unmarked = re.search(r"(?m)^\s*解(?=[^\s：:.．*])", source)
+                source_body = source[unmarked.end() :].strip() if unmarked else ""
+                compact_candidate = re.sub(r"\s+", "", candidate)
+                compact_source = re.sub(r"\s+", "", source_body)
+                existing_solution = bool(
+                    marker.group(1) in ("解", "解答", "解析", "详解")
+                    and compact_candidate
+                    and compact_source
+                    and (
+                        compact_candidate in compact_source
+                        or (
+                            len(compact_candidate) >= 40
+                            and len(compact_candidate) <= len(compact_source) * 1.02
+                            and SequenceMatcher(None, compact_source, compact_candidate).ratio() >= 0.9
+                        )
+                    )
+                )
+                if not existing_solution:
+                    unexpected_indexes.add(marker_index)
         # 原有标记没有按顺序保留下来时，不能确定哪些文本是模型新增的。
         if expected_index != len(expected):
             continue
@@ -872,10 +900,28 @@ def _structured_exercises(value: dict[str, Any] | None) -> list[dict[str, str]] 
 
 _MATH_ONLY_CHARS_RE = re.compile(r"^[A-Za-z0-9\\{}_^.,()+\-*/=<>|:;!%\s]+$")
 _LATEX_COMMAND_RE = re.compile(r"\\[A-Za-z]+")
+_UNBRACED_ATOP_FRACTION_RE = re.compile(
+    r"(?P<relation>\\(?:leqslant|geqslant|less|greater|approx|sim)|=)"
+    r"(?P<space>\s*)(?!\{)(?P<numerator>[^,;&]+?)"
+    r"\\atop\s*(?P<denominator>\{[^{}]+\}|[A-Za-z0-9]+)"
+)
 
 
 def _normalize_math_delimiters(value: str) -> str:
     """Convert common TeX delimiters and wrap bare formula-only Markdown fields."""
+    value = re.sub(r"\\displaylimits(?![A-Za-z])", r"\\limits", value)
+    value = re.sub(r"\\begin\{align\*?\}", r"\\begin{aligned}", value)
+    value = re.sub(r"\\end\{align\*?\}", r"\\end{aligned}", value)
+
+    def replace_unbraced_atop(match: re.Match[str]) -> str:
+        numerator = match.group("numerator").strip()
+        denominator = match.group("denominator").strip()
+        return (
+            f"{match.group('relation')}{match.group('space')}"
+            f"\\frac{{{numerator}}}{{{denominator}}}"
+        )
+
+    value = _UNBRACED_ATOP_FRACTION_RE.sub(replace_unbraced_atop, value)
     value = re.sub(r"\\\((.*?)\\\)", r"$\1$", value, flags=re.DOTALL)
     value = re.sub(
         r"\\\[(.*?)\\\]",
@@ -885,7 +931,10 @@ def _normalize_math_delimiters(value: str) -> str:
     )
 
     def standalone_display_math(match: re.Match[str]) -> str:
-        formula = match.group(1).strip("\n")
+        formula = match.group(1).strip()
+        if formula.startswith(r"\begin{"):
+            formula = "\n" + formula
+            formula = re.sub(r"(\\end\{[^{}]+\})\s*$", r"\1\n", formula)
         return "\n\n$$" + formula + "$$\n\n"
 
     value = re.sub(
@@ -970,6 +1019,40 @@ def _solution_was_truncated(original: str, revised: str) -> bool:
     source_size = len(re.sub(r"\s+", "", source))
     revised_size = len(re.sub(r"\s+", "", candidate))
     return source_size >= 120 and revised_size < source_size * 0.55
+
+
+_UNMARKED_SOLUTION_START_RE = re.compile(
+    r"^\s*解(?=由于|因为|根据|由|设|令|先|利用|从|当|对|将|易得|可得|注意|已知)"
+)
+_POTENTIAL_UNMARKED_SOLUTION_RE = re.compile(
+    r"(?m)^[ \t]*解(?!答|析|决|释|题)(?=[\u4e00-\u9fff])"
+)
+_POTENTIAL_MATH_SOLUTION_RE = re.compile(
+    r"(?s)(?:\$\$|\\\[)\s*\\begin\{(?:aligned|align\*?)\}\s*&?\s*解(?=\s|\\(?:quad|qquad))"
+)
+
+
+def _has_potential_unmarked_solution(content: str) -> bool:
+    return bool(
+        _POTENTIAL_UNMARKED_SOLUTION_RE.search(content)
+        or _POTENTIAL_MATH_SOLUTION_RE.search(content)
+    )
+
+
+def _split_embedded_solution(content: str) -> tuple[str, str]:
+    """Recover an OCR solution introduced by an unpunctuated line like '解由于'."""
+    lines = content.splitlines()
+    first_nonblank = next((i for i, line in enumerate(lines) if line.strip()), None)
+    for index, line in enumerate(lines):
+        if index == first_nonblank:
+            continue
+        marker = _UNMARKED_SOLUTION_START_RE.match(line)
+        if marker:
+            question = "\n".join(lines[:index]).strip()
+            solution = (line[marker.end():] + "\n" + "\n".join(lines[index + 1:])).strip()
+            if question and solution:
+                return question, solution
+    return content.strip(), ""
 
 
 def _render_structured_exercises(
@@ -1625,7 +1708,9 @@ def review_basic_exercise(
 
     多个下标会在一次 LLM 请求中提交，返回顺序与 ``exercise_indices`` 一致。
     """
-    from ..parse_md_exercises import split_exercises, split_solutions_for_section
+    from ..parse_md_exercises import (
+        PROOF_START_RE, SOLUTION_START_RE, split_exercises, split_solutions_for_section,
+    )
 
     if not isinstance(section, dict) or not isinstance(exercise_indices, list):
         raise TypeError("section 必须是 JSON object，exercise_indices 必须是数组")
@@ -1684,10 +1769,20 @@ def review_basic_exercise(
     selected = [normalized["exercises"][i] for i in exercise_indices]
     if any(not (item.get("content") or "").strip() for item in selected):
         raise ValueError("选中的 exercise.content 不能为空")
+    source_items = [dict(item) for item in selected]
+    for source_item in source_items:
+        if source_item.get("solution_steps"):
+            continue
+        question, embedded_solution = _split_embedded_solution(
+            str(source_item.get("content") or "")
+        )
+        if embedded_solution:
+            source_item["content"] = question
+            source_item["solution_steps"] = embedded_solution
     source_node = {
         "has_exercise": True,
         "title": section_name,
-        "exercises": [dict(item) for item in selected],
+        "exercises": source_items,
     }
     from ..postprocess import render_exercise_markdown
 
@@ -1715,7 +1810,13 @@ def review_basic_exercise(
     split_solutions_for_section(
         items,
         section_name,
-        force=any(item.get("solution_steps") for item in selected),
+        force=(
+            any(item.get("solution_steps") for item in selected)
+            or any(
+                SOLUTION_START_RE.match(line) or PROOF_START_RE.match(line)
+                for item in items for line in str(item.get("content") or "").splitlines()
+            )
+        ),
     )
     for item in items:
         for field in ("content", "solution_steps", "answer"):
@@ -1724,6 +1825,38 @@ def review_basic_exercise(
                 item[field] = _normalize_math_delimiters(value)
     for item, original in zip(items, selected):
         original_solution = str(original.get("solution_steps") or "")
+        original_content = str(original.get("content") or "")
+        original_question, embedded_solution = _split_embedded_solution(original_content)
+        if embedded_solution:
+            reviewed_question, reviewed_embedded = _split_embedded_solution(
+                str(item.get("content") or "")
+            )
+            if reviewed_embedded:
+                item["content"] = reviewed_question
+                item["solution_steps"] = "\n\n".join(
+                    part for part in (reviewed_embedded, item.get("solution_steps") or "") if part
+                )
+            if _solution_was_truncated(
+                embedded_solution, str(item.get("solution_steps") or "")
+            ):
+                logger.warning(
+                    "单题审校疑似遗漏题干内解答，保留原始解答：文档=%s，题号=%s",
+                    document_name,
+                    original.get("number"),
+                )
+                item["solution_steps"] = embedded_solution
+            if original_question and item.get("content") == original_content:
+                item["content"] = original_question
+        elif not original_solution and _solution_was_truncated(
+            original_content,
+            "\n".join(str(item.get(field) or "") for field in ("content", "solution_steps", "answer")),
+        ):
+            logger.warning(
+                "单题审校疑似遗漏题干内容，保留原始题干：文档=%s，题号=%s",
+                document_name,
+                original.get("number"),
+            )
+            item["content"] = original_content
         if _solution_was_truncated(
             original_solution, str(item.get("solution_steps") or "")
         ):
@@ -1733,6 +1866,11 @@ def review_basic_exercise(
                 original.get("number"),
             )
             item["solution_steps"] = original_solution
+        # 恢复原始题干或解答发生在首轮公式规范化之后，返回前再规范一次。
+        for field in ("content", "solution_steps", "answer"):
+            value = item.get(field)
+            if isinstance(value, str):
+                item[field] = _normalize_math_delimiters(value)
     result: list[dict[str, Any]] = []
     for item, original in zip(items, selected):
         for field in (
@@ -1762,4 +1900,46 @@ def review_basic_exercise(
             "pages": list(item.get("pages") or []),
             "bbox": list(item.get("bbox") or []),
         })
+    unresolved = [
+        index for index, (original, reviewed) in enumerate(zip(selected, result))
+        if _has_potential_unmarked_solution(str(original.get("content") or ""))
+        and (
+            not reviewed["solution_steps"]
+            or _has_potential_unmarked_solution(str(reviewed["content"]))
+            or _POTENTIAL_MATH_SOLUTION_RE.search(str(reviewed["solution_steps"]))
+        )
+    ]
+    if unresolved:
+        # 第一轮 Markdown 校对有时照抄了“解作…”；改用已有的结构化两轮
+        # LLM 审校明确分配 question/solution_steps，不让通用切分器猜边界。
+        focused_section = {
+            **section,
+            "exercises": source_items,
+            "content": {"original": source},
+        }
+        focused = review_basic(
+            focused_section,
+            source_markdown=source,
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+            timeout_seconds=timeout_seconds,
+            reasoning_effort=reasoning_effort,
+            client=client,
+            usage_callback=usage_callback,
+        )
+        focused_by_number = {
+            str(item.get("number")): item for item in focused["exercises"]
+        }
+        for index in unresolved:
+            number = str(selected[index]["number"])
+            candidate = focused_by_number.get(number)
+            if (
+                not candidate
+                or not str(candidate.get("solution_steps") or "").strip()
+                or _has_potential_unmarked_solution(str(candidate.get("content") or ""))
+                or _POTENTIAL_MATH_SOLUTION_RE.search(str(candidate.get("solution_steps") or ""))
+            ):
+                raise ValueError(f"题目 {number} 的已有解答未能从题干分离，请手动编辑或重试审校")
+            result[index] = candidate
     return result
