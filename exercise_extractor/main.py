@@ -97,6 +97,14 @@ def parse_args() -> argparse.Namespace:
         help="VL OCR 引擎模型名 (default: PaddleOCR-VL-1.6-0.9B)",
     )
     parser.add_argument(
+        "--vl_rec_api_key",
+        "--vl-rec-api-key",
+        dest="vl_rec_api_key",
+        type=str,
+        default=None,
+        help="VL OCR 推理服务 API key（如云端服务要求鉴权）",
+    )
+    parser.add_argument(
         "--toc-vllm-name",
         type=str,
         default="qwen3.7-flash",

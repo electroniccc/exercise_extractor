@@ -63,6 +63,7 @@ def main() -> None:
     unit.test_review_keeps_partial_tool_result()
     unit.test_cli_review_skips_answer_nodes()
     unit.test_cli_engine_device_args()
+    unit.test_vl_rec_api_key_configuration()
     unit.test_match_section_answers()
     unit.test_oss_image_upload()
     unit.test_cli()

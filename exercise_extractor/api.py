@@ -398,6 +398,7 @@ def extract_exercise(
     oss_public_base_url: Optional[str] = None,
     write_outputs: bool = False,
     llm_usage_callback: UsageCallback | None = None,
+    vl_rec_api_key: Optional[str] = None,
 ) -> Iterator[dict]:
     """提取 PDF 或一张/多张图片中的习题，返回公共 section 迭代器。
 
@@ -407,7 +408,7 @@ def extract_exercise(
     model_dir：模型目录；为 None 时读环境变量
     EXERCISE_EXTRACTOR_MODEL_DIR（toc_forge 需要显式模型目录）。
     vl_rec_*：PaddleOCR-VL 引擎初始化参数（backend / server_url /
-    并发数 / 引擎模型名）。
+    并发数 / 引擎模型名 / 推理服务 API key）。
     toc_vllm_name / toc_api_base_url / toc_api_key：目录识别 vLLM 配置；模型名
     默认使用 ``qwen3.7-flash``，地址和密钥未显式传入时分别读取
     ``TOC_FORGE_API_BASE_URL``/``ALIYUN_BASE_URL``/``OPENAI_BASE_URL`` 和
@@ -453,6 +454,7 @@ def extract_exercise(
         vl_rec_server_url=vl_rec_server_url,
         vl_rec_max_concurrency=vl_rec_max_concurrency,
         vl_rec_api_model_name=vl_rec_api_model_name,
+        vl_rec_api_key=vl_rec_api_key,
         toc_vllm_name=toc_vllm_name,
         toc_api_base_url=toc_api_base_url,
         toc_api_key=toc_api_key,

@@ -162,6 +162,9 @@ def create_ocr_pipeline(args: argparse.Namespace) -> PaddleOCRVL:
         ocr_engine_kwargs["device"] = args.ocr_device
     if getattr(args, "ocr_engine", None):
         ocr_engine_kwargs["engine"] = args.ocr_engine
+    vl_rec_api_key = getattr(args, "vl_rec_api_key", None)
+    if vl_rec_api_key:
+        ocr_engine_kwargs["vl_rec_api_key"] = vl_rec_api_key
     pipeline = PaddleOCRVL(
         pipeline_version="v1.6",
         vl_rec_backend=getattr(args, "vl_rec_backend", "vllm-server"),

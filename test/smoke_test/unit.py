@@ -2659,6 +2659,65 @@ def test_cli_engine_device_args() -> None:
     )
 
 
+def test_vl_rec_api_key_configuration() -> None:
+    """OCR API key 从 CLI 与公共 PDF API 传递到 PaddleOCRVL。"""
+    from types import SimpleNamespace
+
+    from exercise_extractor import api, ocr
+    from exercise_extractor.main import parse_args
+
+    with patch(
+        "sys.argv",
+        [
+            "exercise_extractor",
+            "--input",
+            "/tmp/x.pdf",
+            "--vl_rec_api_key",
+            "ocr-test-key",
+        ],
+    ):
+        args = parse_args()
+    check(
+        "CLI 解析 PaddleOCR-VL API key",
+        args.vl_rec_api_key == "ocr-test-key",
+    )
+
+    pipeline = SimpleNamespace(
+        paddlex_pipeline=SimpleNamespace(
+            vl_rec_model=SimpleNamespace(
+                batch_sampler=SimpleNamespace(batch_size=0)
+            )
+        )
+    )
+    with patch.object(ocr, "PaddleOCRVL", return_value=pipeline) as constructor:
+        ocr.create_ocr_pipeline(args)
+    check(
+        "PaddleOCRVL 初始化收到 CLI API key",
+        constructor.call_args.kwargs.get("vl_rec_api_key") == "ocr-test-key",
+    )
+
+    captured = {}
+
+    def fake_iter_sections(pipeline_args, **kwargs):
+        captured.update(vars(pipeline_args))
+        return iter(())
+
+    with patch.object(
+        api, "_prepare_source", return_value=("/tmp/x.pdf", "pdf", None)
+    ), patch.object(api, "iter_sections", side_effect=fake_iter_sections):
+        list(
+            api.extract_exercise(
+                "/tmp/x.pdf",
+                model_dir="/tmp/models",
+                vl_rec_api_key="api-test-key",
+            )
+        )
+    check(
+        "公共 PDF API 将 API key 传入 OCR 配置",
+        captured.get("vl_rec_api_key") == "api-test-key",
+    )
+
+
 def test_match_section_answers() -> None:
     """流式逐节答案匹配：区间答案展开、题数校验、used 去重。"""
     from exercise_extractor import answers

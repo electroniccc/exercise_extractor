@@ -21,9 +21,14 @@ Python 3.10 or newer is required. Install the project and dependencies declared 
 python -m pip install -e .
 ```
 
-OCR for PDFs and images also requires a PaddleOCR-VL model and a local vLLM service. The default service URL is `http://localhost:8080/v1`. Table-of-contents recognition requires `toc_forge` and an OpenAI-compatible model service. Set the model directory with `--model_dir` or `EXERCISE_EXTRACTOR_MODEL_DIR`. Configure the table-of-contents service with `--toc-api-base-url` and `--toc-api-key`, or with the `TOC_FORGE_API_BASE_URL` and `TOC_FORGE_API_KEY` environment variables.
+Table-of-contents recognition also depends on `toc_forge`. Clone it next to the `exercise_extractor` directory and install it from the local checkout:
 
-> `toc_forge` must be available separately in the active Python environment; it is not listed in this project's `pyproject.toml` dependencies.
+```bash
+git clone https://github.com/electroniccc/toc_forge ../toc_forge
+python -m pip install ../toc_forge
+```
+
+OCR for PDFs and images also requires a PaddleOCR-VL model and a local vLLM service. The default service URL is `http://localhost:8080/v1`. Table-of-contents recognition requires `toc_forge` and an OpenAI-compatible model service. Set the model directory with `--model_dir` or `EXERCISE_EXTRACTOR_MODEL_DIR`. Configure the table-of-contents service with `--toc-api-base-url` and `--toc-api-key`, or with the `TOC_FORGE_API_BASE_URL` and `TOC_FORGE_API_KEY` environment variables.
 
 ## Command-line usage
 
@@ -107,6 +112,7 @@ Run `python -m exercise_extractor --help` to see the options. The main options a
 | `--vl_rec_backend` | PaddleOCR-VL recognition backend; defaults to `vllm-server`. |
 | `--vl_rec_max_concurrency` | Maximum concurrent OCR requests; defaults to `4`. |
 | `--vl_rec_api_model_name` | Model name on the OCR service; defaults to `PaddleOCR-VL-1.6-0.9B`. |
+| `--vl_rec_api_key` (alias: `--vl-rec-api-key`) | API key for the PaddleOCR-VL inference service; usually unnecessary for a local server. |
 | `--vl_model` | Model name for output post-processing; this is not the OCR inference service model. |
 | `--ocr-device`, `--ocr-engine` | Device and inference engine for PaddleOCR-VL and table-of-contents OCR, such as `gpu`, `cpu`, `paddle`, or `onnxruntime`. |
 | `--toc-vllm-name` | Table-of-contents recognition model; defaults to `qwen3.7-flash`. |
@@ -118,11 +124,22 @@ Run `python -m exercise_extractor --help` to see the options. The main options a
 | `--oss-endpoint`, `--oss-access-key`, `--oss-secret-key`, `--oss-bucket` | Configure all four to enable OSS/MinIO image uploads. |
 | `--oss-region`, `--oss-prefix`, `--oss-use-ssl`, `--oss-public-base-url` | OSS region, object prefix, HTTPS, and public access base URL. |
 
-### PaddleOCR hosted services
+### PaddleOCR hosted inference services
 
-PaddleOCR-VL itself supports managed inference endpoints using a backend, service URL, model name, and `vl_rec_api_key`. The official guide includes examples for services such as SiliconFlow and Novita AI. [PaddleOCR-VL integration guide](https://www.paddleocr.ai/main/en/version3.x/pipeline_usage/PaddleOCR-VL.html)
+PaddleOCR-VL supports compatible managed inference services and accepts a service API key through `vl_rec_api_key`. [PaddleOCR-VL integration guide](https://www.paddleocr.ai/main/en/version3.x/pipeline_usage/PaddleOCR-VL.html) This project supports the `--vl_rec_api_key` (or `--vl-rec-api-key`) CLI option and the `vl_rec_api_key` Python API argument:
 
-However, **Exercise Extractor does not currently pass an OCR service API key**. The CLI has no `--vl_rec_api_key` option, `extract_exercise` has no corresponding argument, and the `PaddleOCRVL` initializer is not given a key. The project can configure the OCR service URL and model name, but cannot currently call an authenticated hosted OCR endpoint directly. `PADDLEOCR_ACCESS_TOKEN` belongs to PaddleOCR's separate hosted API SDK/CLI; this project does not currently call that asynchronous API either. [PaddleOCR official API overview](https://www.paddleocr.ai/main/en/version3.x/inference_deployment/serving/paddleocr_official_api/overview.html)
+```bash
+python -m exercise_extractor \
+  --input textbook.pdf \
+  --output output \
+  --doc_type textbook \
+  --vl_rec_backend vllm-server \
+  --vl_server_url https://your-vlm-provider.example/v1 \
+  --vl_rec_api_model_name your-model-name \
+  --vl_rec_api_key "$PADDLEOCR_VL_REC_API_KEY"
+```
+
+The Python API also accepts `vl_rec_api_key="..."`. Use the service URL, model name, and PaddleOCR-VL version supported by your provider. The PaddleOCR official hosted API's `PADDLEOCR_ACCESS_TOKEN` belongs to a separate asynchronous API, which this project does not call directly. [PaddleOCR official API overview](https://www.paddleocr.ai/main/en/version3.x/inference_deployment/serving/paddleocr_official_api/overview.html)
 
 Do not commit real API keys, OSS credentials, or private service URLs to the repository.
 
@@ -138,4 +155,4 @@ Set `SMOKE_TEST_FULL_PIPELINE_PDF` and `SMOKE_TEST_FULL_PIPELINE_DOC_TYPE` to en
 
 ## License
 
-The repository does not currently declare an open-source license. Choose and add an appropriate license file before publishing it publicly.
+This project is licensed under the [Apache License 2.0](../LICENSE).
