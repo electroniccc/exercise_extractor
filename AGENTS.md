@@ -12,10 +12,11 @@
 | `exercise_extractor/__main__.py` | `python -m exercise_extractor` 调试入口（等价于仓库根 `python main.py`） |
 | `exercise_extractor/oss.py` | OSS/MinIO 图片上传：传 oss_* 参数（endpoint/access_key/secret_key/bucket）时，把 markdown 里的本地图片上传并把 src 替换为 OSS 公开 URL；缺配置完全不生效 |
 | `exercise_extractor/ocr.py` | 目录识别（build_sections，toc_forge + 阿里云 vLLM）与 OCR（ocr_pages，PaddleOCR-VL） |
+| `exercise_extractor/answer_lines.py` | 从页面图像识别成组点状答题线，供 OCR 重复乱码页遮线重试；不依赖 PDF 文字层 |
 | `exercise_extractor/ocr_cache.py` | OCR 页面缓存：按 PDF hash 文件锁串行生产，临时目录校验后原子发布 page.md/page.json/imgs，READY 标记完整缓存 |
 | `exercise_extractor/extraction.py` | 提取链：目录树 → 习题区域（build_section_tree）、待 OCR 页码、拼页、规则切分（extract_exercises）；后续 LLM 检查/审核在此插入 |
 | `exercise_extractor/exercise_book.py` | 习题集专用流程：有目录按目录层级整节提取，无目录整本 OCR 后按小标题层级切块；题号切分/图注/表格与 textbook 共用 |
-| `exercise_extractor/exampaper.py` | 试卷专用流程：不走目录识别，整卷全量 OCR；按题型小节（选择题/填空题/简答题）切分，处理内嵌【答案】/【解】与文末答案区回填 |
+| `exercise_extractor/exampaper.py` | 试卷专用流程：不走目录识别，整卷全量 OCR；按题型小节切分，英文卷能把连续编号的题目表格还原为题号行；处理内嵌【答案】/【解】与文末答案区回填 |
 | `exercise_extractor/parse_md_exercises.py` | 核心切分器：把 markdown 文本按题号拆成结构化习题（与输入来源无关） |
 | `exercise_extractor/latex_text.py` | 基于 pylatexenc 将 LaTeX 转成 Unicode 纯文本，供标题归一和 bbox 文本匹配使用，不改写输出内容 |
 | `exercise_extractor/exercise_bbox.py` | 题目坐标映射：读取 PaddleOCR-VL 的 `page.json`，按页码、题号和题目文本把结构化习题匹配到 `parsing_res_list`，生成题目级 bbox |
@@ -35,7 +36,7 @@
 ## 主流程（main.py）
 
 1. **build_sections**（ocr.py）：`toc_forge.bookmark_pdf` 做目录识别（阿里云 vLLM 视觉 API，模型 `qwen3.7-flash`，API key 取环境变量 `ALIYUN_API_KEY`），得到目录树后经 `build_section_tree` 筛出习题章节，每节带 `exercise_page_range: [start, end)`。
-2. **ocr_pages**（ocr.py）：对未缓存的习题页转图像，交给 PaddleOCR-VL（vllm-server，默认 `http://localhost:8080/v1`）转 markdown；按 PDF 哈希加文件锁，页面写入临时目录并在 `page.md`/`page.json` 完整后以 `READY` 标记原子发布，只有完整缓存才自动跳过。
+2. **ocr_pages**（ocr.py）：对未缓存的习题页转图像，交给 PaddleOCR-VL（vllm-server，默认 `http://localhost:8080/v1`）转 markdown；检测到长串或整块重复乱码且图像存在成组点状答题线时，遮盖这些线并重试一次，已有乱码缓存也会按需修复。文字层明确标出的空白页和纯版权尾页直接跳过。按 PDF 哈希加文件锁，页面写入临时目录并在 `page.md`/`page.json` 完整后以 `READY` 标记发布。
 3. **combine_section_pages**（extraction.py）：把每节若干页 markdown 拼接，页间插入 `<!-- page: N -->` 标记供页码溯源。
 4. **extract_exercises**（extraction.py）：切分、按小节过滤、处理隐式节尾习题、题号重排为 1,2,3…（原题号保留在 `original_number`）。
 5. **answers.extract_and_match**：对 `is_answers` 节点拼页、按小标题切块、与习题节点匹配并校验题数，结果写入 `node["answer_sections"]`。

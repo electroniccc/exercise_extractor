@@ -20,6 +20,7 @@
 
 import logging
 import re
+from html import unescape
 from typing import TypedDict
 
 from .extraction import (
@@ -64,6 +65,29 @@ _CN_SCORE_NOTE_RE = re.compile(
     r"(?:\s*[,，]\s*每小题\s*\d+\s*分)?\s*[）)]"
 )
 _HTML_TABLE_RE = re.compile(r"<table\b[^>]*>.*?</table>", re.I | re.S)
+
+
+def _unpack_numbered_question_tables(content: str) -> str:
+    """Turn OCR tables with numbered prose rows into ordinary question lines.
+
+    Score grids and numeric data tables stay intact: their second cells do not
+    contain a sequence of substantial question text.
+    """
+    def replace(match: re.Match[str]) -> str:
+        items: list[tuple[int, str]] = []
+        for row in re.findall(r"<tr\b[^>]*>(.*?)</tr\s*>", match.group(0), re.I | re.S):
+            cells = re.findall(r"<t[dh]\b[^>]*>(.*?)</t[dh]\s*>", row, re.I | re.S)
+            if len(cells) < 2:
+                continue
+            number_text = unescape(re.sub(r"<[^>]+>", "", cells[0])).strip()
+            body = unescape(re.sub(r"<[^>]+>", "", cells[1])).replace(r"\n", "\n").strip()
+            if re.fullmatch(r"[1-9]\d?", number_text) and re.search(r"[A-Za-z]{3}", body):
+                items.append((int(number_text), body))
+        if len(items) < 2 or any(b[0] != a[0] + 1 for a, b in zip(items, items[1:])):
+            return match.group(0)
+        return "\n\n".join(f"{number} {body}" for number, body in items)
+
+    return _HTML_TABLE_RE.sub(replace, content)
 # 数字序号 + 顿号（如 "1、选择题"）也接受，但必须带题型词，避免把题号行当小节
 _DIGIT_SECTION_RE = re.compile(r"^(\d{1,2})\s*[、]\s*(.*)$")
 
@@ -805,8 +829,18 @@ def _split_english_numbered_exercises(section: TypeSection) -> list[Exercise]:
             page is not None and line_on_page <= 2
             and not page_number_skipped and stripped == str(page)
         ):
-            page_number_skipped = True
-            continue
+            # OCR may omit the printed page number and leave only a question
+            # with the same number at the start of that page.
+            likely_question = (
+                previous == page - 1
+                and bool(re.match(
+                    r"(?i)^(?:The|Find|Given|Show|A|An|Determine|Calculate|Express)\b",
+                    following,
+                ))
+            )
+            if not likely_question:
+                page_number_skipped = True
+                continue
         if _EN_FURNITURE_RE.match(stripped) or _EN_PAGE_CODE_RE.match(stripped) or (
             stripped.isdigit() and _EN_PAGE_CODE_RE.match(following)
         ):
@@ -903,6 +937,8 @@ def _split_section_exercises(section: TypeSection) -> list[Exercise]:
     chunk = "\n".join(section["lines"]).strip()
     if not chunk:
         return []
+    if section.get("english_paper"):
+        chunk = _unpack_numbered_question_tables(chunk)
     if not section.get("english_paper"):
         chunk = _strip_scoring_marks(chunk)
     chunk = demote_exercise_headings(chunk)

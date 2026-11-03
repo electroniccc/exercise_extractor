@@ -399,12 +399,15 @@ def extract_exercise(
     write_outputs: bool = False,
     llm_usage_callback: UsageCallback | None = None,
     vl_rec_api_key: Optional[str] = None,
+    document_name: Optional[str] = None,
 ) -> Iterator[dict]:
     """提取 PDF 或一张/多张图片中的习题，返回公共 section 迭代器。
 
     source：PDF 路径，或一张/多张图片路径。输入类型按扩展名自动识别；图片
     按连续页面处理且不经过目录识别，三种 doc_type 均复用对应的习题切分逻辑。
     doc_type：textbook / exercise_book / exampaper。
+    document_name：可选的原始文档名；上传服务把文件保存为哈希路径时应传入，
+    以免试卷 section 标题和路径使用内部哈希。
     model_dir：模型目录；为 None 时读环境变量
     EXERCISE_EXTRACTOR_MODEL_DIR（toc_forge 需要显式模型目录）。
     vl_rec_*：PaddleOCR-VL 引擎初始化参数（backend / server_url /
@@ -446,7 +449,10 @@ def extract_exercise(
     args = SimpleNamespace(
         input=prepared_source,
         source_type=source_type,
-        document_name=os.path.splitext(os.path.basename(source_paths[0]))[0],
+        document_name=(
+            document_name
+            or os.path.splitext(os.path.basename(source_paths[0]))[0]
+        ),
         output=output_dir,
         ocr_cache=ocr_cache,
         model_dir=model_dir,

@@ -805,6 +805,28 @@ def test_exampaper_build_node() -> None:
     )
 
 
+def test_exampaper_build_sections_uses_original_document_name() -> None:
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from exercise_extractor import ocr
+
+    document = SimpleNamespace(page_count=12, close=lambda: None)
+    args = SimpleNamespace(
+        input="/uploads/3f974ef05f6a3d262370fa46ac91adcf.pdf",
+        source_type="pdf",
+        doc_type="exampaper",
+        document_name="a-level-cambridge-9709-11-june-2024",
+    )
+    with patch.object(ocr.pymupdf, "open", return_value=document):
+        sections = ocr.build_sections(args)
+    check(
+        "试卷 section 标题使用原始文档名而非上传哈希",
+        len(sections) == 1
+        and sections[0]["title"] == "a-level-cambridge-9709-11-june-2024",
+    )
+
+
 def test_exampaper_output_sections() -> None:
     from exercise_extractor import exampaper
 
@@ -1313,6 +1335,7 @@ def test_declared_blank_pdf_page() -> None:
     import pymupdf
 
     from exercise_extractor.ocr import ocr_pages
+    from exercise_extractor.ocr import _page_declared_blank
     from exercise_extractor.ocr_cache import page_cache_is_ready
 
     with tempfile.TemporaryDirectory() as cache_dir:
@@ -1346,6 +1369,22 @@ def test_declared_blank_pdf_page() -> None:
             and page_cache_is_ready(markdown_path, 1)
             and page_cache_is_ready(markdown_path, 2),
         )
+        appendix = pymupdf.open()
+        blank = appendix.new_page()
+        blank.insert_text(
+            (72, 72),
+            "3\n9702/21/M/J/24\n© UCLES 2024\n[Turn over\nBLANK PAGE",
+        )
+        check("带翻页提示的空白页也不送 OCR", _page_declared_blank(blank))
+        legal = appendix.new_page()
+        legal.insert_text(
+            (72, 72),
+            "20\n9702/21/M/J/24\n© UCLES 2024\n"
+            "Permission to reproduce items where third-party material is included.\n"
+            "The publisher will be pleased to make amends.",
+        )
+        check("只有版权声明的尾页不送 OCR", _page_declared_blank(legal))
+        appendix.close()
 
 
 def test_ocr_page_batches() -> None:
@@ -1390,6 +1429,205 @@ def test_ocr_page_batches() -> None:
         check("OCR 长卷四页一批", sizes == [4, 4, 1]
               and all(page_cache_is_ready(markdown_path, p) for p in range(1, 10)),
               str(sizes))
+
+
+def test_answer_line_image_detection() -> None:
+    """只遮盖成组的空白答题线，保留孤立横线和附近文字。"""
+    import cv2
+    import numpy as np
+
+    from exercise_extractor.answer_lines import mask_answer_lines
+
+    image = np.full((700, 900, 3), 255, dtype=np.uint8)
+    cv2.putText(image, "Find x", (90, 80), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2)
+    cv2.line(image, (100, 120), (650, 120), (0, 0, 0), 2)
+    for y in (250, 300, 350, 400):
+        for x in range(100, 800, 10):
+            cv2.line(image, (x, y), (x + 2, y), (0, 0, 0), 1)
+    cleaned, count = mask_answer_lines(image)
+    check(
+        "图像答题线被遮盖且题干/孤立横线保留",
+        count == 4
+        and np.count_nonzero(cleaned[248:403, 100:800] < 200) == 0
+        and np.array_equal(cleaned[50:130], image[50:130]),
+    )
+
+
+def test_answer_line_retry_decision() -> None:
+    """只有异常重复的 OCR 内容才触发答题线重试。"""
+    from exercise_extractor.answer_lines import is_repetition_garbage
+
+    bad = "3. Find x.\n" + r"\(\begin{array}{l}\hline}" + (r" \ " * 150)
+    check(
+        "长重复 LaTeX 被识别为答题线乱码",
+        is_repetition_garbage(bad),
+    )
+    check(
+        "正常题干与少量公式不触发重试",
+        not is_repetition_garbage("3. Find x. $x=2$\n" + "\n" * 20),
+    )
+    repeated_blocks = "Find the area of the triangle.\n" + (
+        "$ \\begin{cases}\n\\text{己} \\\\\n\\text{己} \\\\\n\\end{cases} $\n" * 80
+    )
+    check("整块短 LaTeX 重复也识别为答题线乱码", is_repetition_garbage(repeated_blocks))
+
+
+def test_ocr_retries_garbage_answer_lines() -> None:
+    """OCR 乱码页重试遮线图；已有异常缓存也能被修复。"""
+    import cv2
+    import numpy as np
+    import pymupdf
+    from exercise_extractor.ocr import ocr_pages
+
+    image = np.full((700, 900, 3), 255, dtype=np.uint8)
+    cv2.putText(image, "Find x", (90, 80), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2)
+    for y in (250, 300, 350, 400):
+        for x in range(100, 800, 10):
+            cv2.line(image, (x, y), (x + 2, y), (0, 0, 0), 1)
+
+    class Result:
+        def __init__(self, text):
+            self.text = text
+
+        def save_to_markdown(self, *, save_path, **_kwargs):
+            with open(save_path, "w", encoding="utf-8") as stream:
+                stream.write(self.text)
+
+        def save_to_json(self, *, save_path, **_kwargs):
+            with open(save_path, "w", encoding="utf-8") as stream:
+                json.dump({"parsing_res_list": []}, stream)
+
+    bad = "3. Find x.\n" + (r" \ " * 150)
+    good = "3. Find x.\n"
+    with tempfile.TemporaryDirectory() as directory:
+        pdf_path = os.path.join(directory, "paper.pdf")
+        doc = pymupdf.open()
+        doc.new_page()
+        doc.save(pdf_path)
+        doc.close()
+        markdown_path = os.path.join(directory, "markdown")
+        args = SimpleNamespace(input=pdf_path, vl_model="PaddleOCR-VL")
+        sections = [{"has_exercise": True, "exercise_page_range": [1, 2]}]
+        pipeline = Mock()
+        calls = []
+
+        def predict(images):
+            calls.extend(images)
+            return iter([Result(bad if len(calls) == 1 else good)])
+
+        pipeline.predict_iter.side_effect = predict
+        with patch("exercise_extractor.ocr.image_from_page", return_value=image):
+            ocr_pages(args, sections, markdown_path, pipeline)
+        page_markdown = os.path.join(markdown_path, "page_1", "page.md")
+        with open(page_markdown, encoding="utf-8") as stream:
+            first = stream.read()
+        check(
+            "新 OCR 乱码页只对答题线重试并发布干净结果",
+            len(calls) == 2 and first == good
+            and np.array_equal(calls[0], image)
+            and np.count_nonzero(calls[1][248:403, 100:800] < 200) == 0,
+        )
+
+        # Reproduce an old cache from before the detector was introduced.
+        with open(page_markdown, "w", encoding="utf-8") as stream:
+            stream.write(bad)
+        calls.clear()
+        pipeline.predict_iter.side_effect = lambda images: (calls.extend(images) or iter([Result(good)]))
+        with patch("exercise_extractor.ocr.image_from_page", return_value=image):
+            ocr_pages(args, sections, markdown_path, pipeline)
+        with open(page_markdown, encoding="utf-8") as stream:
+            repaired = stream.read()
+        check("旧 OCR 乱码缓存可重新识别", len(calls) == 1 and repaired == good)
+
+
+def test_scanned_exam_public_extraction() -> None:
+    """没有文字层的扫描试卷仍可经公共提取接口避开答题线乱码。"""
+    import cv2
+    import numpy as np
+    import pymupdf
+    from exercise_extractor import extract_exercise
+    from exercise_extractor import pipeline as extraction_pipeline
+
+    image = np.full((700, 900, 3), 255, dtype=np.uint8)
+    cv2.putText(image, "1 Find x.", (90, 80), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2)
+    for y in (250, 300, 350, 400):
+        for x in range(100, 800, 10):
+            cv2.line(image, (x, y), (x + 2, y), (0, 0, 0), 1)
+
+    class Result:
+        def __init__(self, content):
+            self.content = content
+
+        def save_to_markdown(self, *, save_path, **_kwargs):
+            with open(save_path, "w", encoding="utf-8") as stream:
+                stream.write(self.content)
+
+        def save_to_json(self, *, save_path, **_kwargs):
+            with open(save_path, "w", encoding="utf-8") as stream:
+                json.dump({"parsing_res_list": []}, stream)
+
+    with tempfile.TemporaryDirectory() as directory:
+        pdf_path = os.path.join(directory, "scan.pdf")
+        doc = pymupdf.open()
+        page = doc.new_page(width=900, height=700)
+        page.insert_image(page.rect, stream=cv2.imencode(".png", image)[1].tobytes())
+        has_no_text_layer = not page.get_text("text").strip()
+        doc.save(pdf_path)
+        doc.close()
+        calls = []
+
+        def predict(images):
+            calls.extend(images)
+            content = (
+                "Cambridge A-level examination paper.\nAnswer all questions.\n"
+                "Write your answers in the spaces provided.\n"
+                "1 Find the value of x.\n"
+                + ((r" \ " * 150) if len(calls) == 1 else "")
+            )
+            return iter([Result(content)])
+
+        fake_pipeline = Mock()
+        fake_pipeline.predict_iter.side_effect = predict
+        with patch.object(extraction_pipeline, "create_ocr_pipeline", return_value=fake_pipeline):
+            sections = list(extract_exercise(
+                pdf_path, doc_type="exampaper", ocr_cache=directory,
+                model_dir=directory,
+            ))
+        check(
+            "扫描 PDF 无文字层且提取 API 返回干净题目",
+            has_no_text_layer and len(calls) == 2
+            and any("Find the value of x" in item["content"]
+                    for section in sections for item in section["exercises"]),
+            str(sections),
+        )
+
+
+def test_english_exam_numbered_question_table() -> None:
+    """英文卷首页的题号表格启动切分，页码同号时不吞题号。"""
+    from exercise_extractor import exampaper
+
+    markdown = (
+        "## A-level MATHEMATICS\n\n"
+        "<!-- page: 1 -->\n"
+        "<table><tr><td>For Examiner's Use</td></tr>"
+        "<tr><td>1</td><td></td></tr><tr><td>2</td><td></td></tr></table>\n"
+        "<!-- page: 2 -->\n"
+        "<table><tr><td>Answer all questions.</td></tr>"
+        "<tr><td>1</td><td>Find the coefficient of $x^7$. Circle your answer.</td></tr>"
+        "<tr><td>2</td><td>Given $y=2x^3$, find $dy/dx$.</td></tr></table>\n"
+        "<!-- page: 3 -->\n"
+        "3\nThe curve is transformed. Find the equation.\n"
+        "4 Given a small angle, find an approximation.\n"
+    )
+    sections, _ = exampaper.split_type_sections(markdown)
+    items = [item for section in sections for item in exampaper._split_section_exercises(section)]
+    check(
+        "英文题号表格与同号页码后续题均被提取",
+        [item["number"] for item in items] == ["1", "2", "3", "4"]
+        and "coefficient" in items[0]["content"]
+        and "curve is transformed" in items[2]["content"],
+        str([(item["number"], item["content"][:40]) for item in items]),
+    )
 
 def test_llm_review_contract() -> None:
     """LLM 审校接口只改文本并按题目追加状态，工具轮次可控。"""
@@ -2695,6 +2933,21 @@ def test_vl_rec_api_key_configuration() -> None:
         "PaddleOCRVL 初始化收到 CLI API key",
         constructor.call_args.kwargs.get("vl_rec_api_key") == "ocr-test-key",
     )
+    with tempfile.TemporaryDirectory() as model_root:
+        layout_dir = os.path.join(model_root, "PP-DocLayoutV3")
+        os.mkdir(layout_dir)
+        os.mkdir(os.path.join(model_root, "PaddleOCR-VL-1.6"))
+        with open(os.path.join(layout_dir, "inference.json"), "w") as stream:
+            stream.write("{}")
+        with open(os.path.join(layout_dir, "inference.pdiparams"), "w") as stream:
+            stream.write("model")
+        local_args = SimpleNamespace(model_dir=model_root, ocr_engine="onnxruntime")
+        with patch.object(ocr, "PaddleOCRVL", return_value=pipeline) as constructor:
+            ocr.create_ocr_pipeline(local_args)
+        check(
+            "ONNX 引擎不接收只有 Paddle 文件的模型目录",
+            "layout_detection_model_dir" not in constructor.call_args.kwargs,
+        )
 
     captured = {}
 
@@ -2710,11 +2963,13 @@ def test_vl_rec_api_key_configuration() -> None:
                 "/tmp/x.pdf",
                 model_dir="/tmp/models",
                 vl_rec_api_key="api-test-key",
+                document_name="Original filename",
             )
         )
     check(
-        "公共 PDF API 将 API key 传入 OCR 配置",
-        captured.get("vl_rec_api_key") == "api-test-key",
+        "公共 PDF API 将 API key 与原始文件名传入 OCR 配置",
+        captured.get("vl_rec_api_key") == "api-test-key"
+        and captured.get("document_name") == "Original filename",
     )
 
 

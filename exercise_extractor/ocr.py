@@ -11,12 +11,14 @@ import json
 import logging
 import os
 import re
+import tempfile
 
 import pymupdf
 import toc_forge
 from paddleocr import PaddleOCRVL
 
 from . import exampaper, exercise_book
+from .answer_lines import is_repetition_garbage, mask_answer_lines
 from .llm_usage import LlmUsage, UsageCallback, report_usage
 from .extraction import SectionNode, build_section_tree, collect_pages_to_ocr
 from .ocr_cache import (
@@ -103,7 +105,9 @@ def build_sections(
         doc = pymupdf.open(args.input)
         doc_page_count = doc.page_count
         doc.close()
-        title = os.path.splitext(os.path.basename(args.input))[0]
+        title = getattr(
+            args, "document_name", os.path.splitext(os.path.basename(args.input))[0]
+        )
         return exampaper.build_exampaper_sections(title, doc_page_count)
     # toc_forge 的目录页 OCR 与习题页 OCR 应使用同一套 Paddle 推理设备/引擎。
     toc_engine_kwargs = _toc_ocr_kwargs(args)
@@ -165,6 +169,28 @@ def create_ocr_pipeline(args: argparse.Namespace) -> PaddleOCRVL:
     vl_rec_api_key = getattr(args, "vl_rec_api_key", None)
     if vl_rec_api_key:
         ocr_engine_kwargs["vl_rec_api_key"] = vl_rec_api_key
+    model_root = getattr(args, "model_dir", None)
+    if model_root:
+        layout_dir = os.path.join(model_root, "PP-DocLayoutV3")
+        engine = getattr(args, "ocr_engine", None)
+        layout_files_match_engine = (
+            engine == "onnxruntime"
+            and os.path.isfile(os.path.join(layout_dir, "inference.onnx"))
+        ) or (
+            engine == "paddle"
+            and (
+                os.path.isfile(os.path.join(layout_dir, "inference.json"))
+                or os.path.isfile(os.path.join(layout_dir, "inference.pdmodel"))
+            )
+        )
+        if os.path.isdir(layout_dir) and layout_files_match_engine:
+            ocr_engine_kwargs["layout_detection_model_dir"] = layout_dir
+        # PaddleOCR-VL's vllm-server backend runs recognition remotely; the
+        # model directory is only useful to local recognition backends.
+        if getattr(args, "vl_rec_backend", "vllm-server") != "vllm-server":
+            vl_model_dir = os.path.join(model_root, "PaddleOCR-VL-1.6")
+            if os.path.isdir(vl_model_dir):
+                ocr_engine_kwargs["vl_rec_model_dir"] = vl_model_dir
     pipeline = PaddleOCRVL(
         pipeline_version="v1.6",
         vl_rec_backend=getattr(args, "vl_rec_backend", "vllm-server"),
@@ -185,10 +211,10 @@ def create_ocr_pipeline(args: argparse.Namespace) -> PaddleOCRVL:
 
 
 def _save_ocr_result(
-    res, page_num: int, markdown_path: str, vl_model: str
+    res, page_num: int, markdown_path: str, vl_model: str, *, replace_ready: bool = False
 ) -> None:
     """把单页结果写到临时目录，校验 Markdown/JSON 后原子发布。"""
-    if page_cache_is_ready(markdown_path, page_num):
+    if page_cache_is_ready(markdown_path, page_num) and not replace_ready:
         return
     staging_dir = create_page_staging_dir(markdown_path, page_num)
     try:
@@ -205,24 +231,108 @@ def _save_ocr_result(
         # 后处理也在临时目录完成，最终目录始终只出现完整版本。
         if "PaddleOCR" in vl_model:
             fix_markdown_block_latex(staging_dir)
-        publish_page_cache(staging_dir, markdown_path, page_num)
+        publish_page_cache(staging_dir, markdown_path, page_num, replace_ready=replace_ready)
         clear_page_failure(markdown_path, page_num)
     finally:
         discard_page_staging(staging_dir)
 
 
+def _ocr_result_markdown(res, markdown_path: str) -> str:
+    """Read a result before publishing so bad generated text never enters the cache."""
+    os.makedirs(markdown_path, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".ocr_probe.", dir=markdown_path) as directory:
+        path = os.path.join(directory, "page.md")
+        res.save_to_markdown(save_path=path, show_formula_number=True)
+        with open(path, encoding="utf-8") as stream:
+            return stream.read()
+
+
+def _retry_answer_lines(res, image, markdown_path: str, pipeline: PaddleOCRVL):
+    """Retry a garbled page once after masking high-confidence writing lines."""
+    if not is_repetition_garbage(_ocr_result_markdown(res, markdown_path)):
+        return res
+    cleaned, line_count = mask_answer_lines(image)
+    if not line_count:
+        return res
+    try:
+        retry = next(pipeline.predict_iter([cleaned]))
+        if not is_repetition_garbage(_ocr_result_markdown(retry, markdown_path)):
+            logger.info("OCR 答题线乱码重试成功，遮盖 %d 条线", line_count)
+            return retry
+    except Exception as error:
+        logger.warning("OCR 答题线重试失败，保留初次结果: %s", error)
+    return res
+
+
+def _repair_cached_answer_lines(
+    doc, sections: list[SectionNode], markdown_path: str, vl_model: str,
+    pipeline: PaddleOCRVL, *, skip_pages: set[int],
+) -> None:
+    """Revisit old bad caches without invalidating every healthy OCR page."""
+    if not os.path.isdir(markdown_path):
+        return
+    wanted_pages: set[int] = set()
+
+    def visit(node: SectionNode) -> None:
+        if node.get("has_exercise") or node.get("is_answers"):
+            start, end = node["exercise_page_range"]
+            wanted_pages.update(range(start, end))
+        for child in node.get("children", []):
+            visit(child)
+
+    for section in sections:
+        visit(section)
+    for entry in os.scandir(markdown_path):
+        if not entry.is_dir() or not re.fullmatch(r"page_\d+", entry.name):
+            continue
+        page_num = int(entry.name[5:])
+        if (page_num in skip_pages or page_num not in wanted_pages
+                or page_num < 1 or page_num > doc.page_count
+                or not page_cache_is_ready(markdown_path, page_num)):
+            continue
+        with open(os.path.join(entry.path, "page.md"), encoding="utf-8") as stream:
+            if not is_repetition_garbage(stream.read()):
+                continue
+        image = image_from_page(doc[page_num - 1])
+        cleaned, line_count = mask_answer_lines(image)
+        if not line_count:
+            continue
+        try:
+            result = next(pipeline.predict_iter([cleaned]))
+            if is_repetition_garbage(_ocr_result_markdown(result, markdown_path)):
+                continue
+            _save_ocr_result(result, page_num, markdown_path, vl_model, replace_ready=True)
+            logger.info("修复第 %d 页旧 OCR 答题线乱码缓存（%d 条线）", page_num, line_count)
+        except Exception as error:
+            logger.warning("第 %d 页旧 OCR 缓存修复失败，保留原结果: %s", page_num, error)
+
+
 def _page_declared_blank(page) -> bool:
-    """只识别 PDF 明确标出的空白页，避免误跳过扫描题页。"""
+    """只跳过 PDF 文字层明确标出的空白或版权尾页。"""
     lines = [line.strip() for line in page.get_text("text").splitlines()]
     lines = [line for line in lines if line]
     if any(line.lower() == "there are no questions printed on this page"
            for line in lines):
         return True
+    non_header = [
+        line for line in lines
+        if not re.fullmatch(
+            r"\d{1,3}|\d{4}/\d{1,2}/[A-Z]/[A-Z]/\d{2}|©\s*UCLES\s*\d{4}",
+            line,
+        )
+    ]
+    if non_header and non_header[0].lower().startswith("permission to reproduce"):
+        return True
     if "BLANK PAGE" not in lines:
         return False
     return all(
         line == "BLANK PAGE"
-        or re.fullmatch(r"\d{1,3}|\d{4}/\d{1,2}/[A-Z]/[A-Z]/\d{2}|©\s*UCLES\s*\d{4}", line)
+        or re.fullmatch(
+            r"\d{1,3}|\d{4}/\d{1,2}/[A-Z]/[A-Z]/\d{2}"
+            r"|©\s*UCLES\s*\d{4}|\[Turn over\]?",
+            line,
+            re.IGNORECASE,
+        )
         for line in lines
     )
 
@@ -250,6 +360,7 @@ def _ocr_single_page(
     try:
         img = image_from_page(doc[page_num - 1])
         res = next(pipeline.predict_iter([img]))
+        res = _retry_answer_lines(res, img, markdown_path, pipeline)
         _save_ocr_result(res, page_num, markdown_path, vl_model)
     except Exception as e:
         logger.error("第 %d 页 OCR 失败，跳过: %s", page_num, e)
@@ -276,10 +387,12 @@ def _ocr_pages_locked(
     """锁内重新检查缺页并生产缓存；调用方不得绕过 ``ocr_pages``。"""
     # 缺页必须在取得锁之后计算：等待锁期间，另一个请求可能已经完成 OCR。
     pages_to_ocr = collect_pages_to_ocr(sections, markdown_path)
+    new_pages = set(pages_to_ocr)
     if not pages_to_ocr:
-        logger.info("所有习题页均已有缓存，自动跳过 OCR")
-        return
-    if not args.input:
+        logger.info("所有习题页均已有缓存，检查历史答题线乱码")
+        if not args.input:
+            return
+    if pages_to_ocr and not args.input:
         raise SystemExit(
             f"还有 {len(pages_to_ocr)} 页未缓存（如第 {pages_to_ocr[0]} 页），"
             "补 OCR 需要 --input"
@@ -299,15 +412,15 @@ def _ocr_pages_locked(
                 page_num for page_num in pages_to_ocr
                 if page_num not in blank_pages
             ]
-        if not pages_to_ocr:
-            return
         for start in range(0, len(pages_to_ocr), OCR_PAGE_BATCH_SIZE):
             batch_pages = pages_to_ocr[start:start + OCR_PAGE_BATCH_SIZE]
             try:
                 imgs = [image_from_page(doc[page_num - 1]) for page_num in batch_pages]
-                for idx, res in enumerate(pipeline.predict_iter(imgs)):
+                batch_results = list(pipeline.predict_iter(imgs))
+                for idx, res in enumerate(batch_results):
                     if idx >= len(batch_pages):
                         break
+                    res = _retry_answer_lines(res, imgs[idx], markdown_path, pipeline)
                     _save_ocr_result(
                         res, batch_pages[idx], markdown_path, args.vl_model
                     )
@@ -337,5 +450,9 @@ def _ocr_pages_locked(
                         doc, page_num, markdown_path, args.vl_model,
                         fallback_pipeline,
                     )
+        _repair_cached_answer_lines(
+            doc, sections, markdown_path, args.vl_model, pipeline,
+            skip_pages=new_pages,
+        )
     finally:
         doc.close()

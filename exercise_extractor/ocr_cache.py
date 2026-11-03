@@ -64,6 +64,8 @@ def publish_page_cache(
     staging_dir: str,
     markdown_path: str,
     page_num: int,
+    *,
+    replace_ready: bool = False,
 ) -> bool:
     """校验临时页面并原子发布；READY 是发布前最后写入的文件。"""
     markdown_file = os.path.join(staging_dir, "page.md")
@@ -80,9 +82,20 @@ def publish_page_cache(
         stream.write("ready\n")
 
     final_dir = page_cache_dir(markdown_path, page_num)
-    if page_cache_is_ready(markdown_path, page_num):
+    if page_cache_is_ready(markdown_path, page_num) and not replace_ready:
         discard_page_staging(staging_dir)
         return False
+    if page_cache_is_ready(markdown_path, page_num) and replace_ready:
+        backup_dir = tempfile.mkdtemp(prefix=f".page_{page_num}.backup.", dir=markdown_path)
+        os.rmdir(backup_dir)
+        os.replace(final_dir, backup_dir)
+        try:
+            os.replace(staging_dir, final_dir)
+        except BaseException:
+            os.replace(backup_dir, final_dir)
+            raise
+        discard_page_staging(backup_dir)
+        return True
     # 这里只有缺少 READY 的旧缓存或上次崩溃留下的半成品；调用者持有
     # 文档级锁，因此清理后到 os.replace 之间不会被内部读者观察到。
     if os.path.lexists(final_dir):

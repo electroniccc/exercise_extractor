@@ -30,6 +30,8 @@ python -m pip install ../toc_forge
 
 PDF/图片 OCR 还需要可用的 PaddleOCR-VL 模型与本地 vLLM 服务，默认服务地址为 `http://localhost:8080/v1`。目录识别需要 `toc_forge` 及一个兼容 OpenAI API 的模型服务。模型目录可通过 `--model_dir` 或 `EXERCISE_EXTRACTOR_MODEL_DIR` 指定；目录识别服务可通过 `--toc-api-base-url`、`--toc-api-key` 配置，也可使用 `TOC_FORGE_API_BASE_URL`、`TOC_FORGE_API_KEY` 环境变量。
 
+试卷中的成组点状答题线若使 PaddleOCR-VL 输出大量重复字符或重复公式块，OCR 管线会从页面图像定位这些线，遮盖后只重试异常页一次；扫描件不需要文字层。旧缓存中符合该异常特征的页面也会在再次提取时修复。孤立横线、表格线和正常 OCR 页面不触发重试。文字层明确标出的空白页和纯版权尾页不送入 OCR；英文试卷中连续编号的题目表格会还原为普通题号行。`model_dir` 下已有 `PP-DocLayoutV3` 与 `PaddleOCR-VL-1.6` 时，OCR 会直接使用本地模型目录。
+
 ## 命令行用法
 
 提取教材：
