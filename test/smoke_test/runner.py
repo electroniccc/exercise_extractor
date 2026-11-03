@@ -39,6 +39,7 @@ def main() -> None:
     unit.test_html_tables()
     unit.test_exercise_book_sections()
     unit.test_exampaper_build_node()
+    unit.test_exampaper_output_sections()
     unit.test_exampaper_build_sections_uses_original_document_name()
     unit.test_api_contract()
     unit.test_exercise_bbox()

@@ -82,10 +82,11 @@ def _public_section_title(node: dict[str, Any], section_path: str) -> str:
 
     某些教材每章下的习题节点都只标为“习题”。公共 JSON 需要一个能区分
     章节的标题，因此在普通（非隐式）节点且路径确实以该泛化标题结尾时，
-    用上级路径标题和“习题”以空格拼接。``path`` 本身仍保留目录树的 ``/``。
+    用上级路径标题和“习题”以空格拼接。试卷的 ``Questions`` 等通用题型节
+    保留自己的标题，避免把文档名拼进 section 标题。``path`` 本身仍保留目录树的 ``/``。
     """
     title = str(node.get("title") or "")
-    if node.get("implicit") or not is_generic_section(title):
+    if node.get("exampaper") or node.get("implicit") or not is_generic_section(title):
         return title
     parts = [part.strip() for part in str(section_path or "").split("/") if part.strip()]
     if len(parts) >= 2 and is_generic_section(parts[-1]):

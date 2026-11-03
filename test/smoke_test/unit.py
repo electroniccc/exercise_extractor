@@ -851,6 +851,29 @@ def test_exampaper_output_sections() -> None:
         and [len(child["exercises"]) for child in node["children"]]
         == [1, 1, 1],
     )
+    generic_paper_section = {
+        "title": "Questions",
+        "has_exercise": True,
+        "exampaper": True,
+        "children": [],
+        "exercise_page_range": [1, 2],
+        "exercises": [
+            {"number": "1", "content": "Find x.", "answer": "", "solution_steps": ""}
+        ],
+    }
+    from exercise_extractor.public_schema import public_section_from_node
+
+    public = public_section_from_node(
+        generic_paper_section,
+        path="a-level-cambridge-9709-11-june-2024/Questions",
+        document_name="a-level-cambridge-9709-11-june-2024",
+    )
+    check(
+        "试卷通用 section 标题不拼接文档标题",
+        public is not None
+        and public["title"] == "Questions"
+        and public["path"] == "a-level-cambridge-9709-11-june-2024/Questions",
+    )
     bare_heading = {
         "title": "南京大学 851 真题",
         "has_exercise": True,
