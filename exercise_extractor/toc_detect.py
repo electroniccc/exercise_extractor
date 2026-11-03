@@ -95,7 +95,19 @@ TOC_SKIP_TERMS = (
 def is_exercise_title(title: str) -> bool:
     # 目录 OCR 偶尔会把复合词拆开（如“习 题”），匹配前去掉空白噪声。
     t = re.sub(r"\s+", "", title.lower())
-    return any(keyword in t for keyword in EXERCISE_TITLE_KEYWORDS)
+    if any(keyword in t for keyword in EXERCISE_TITLE_KEYWORDS if not keyword.isascii()):
+        return True
+    # A subject title mentioning "problems" is not an exercise collection
+    # (e.g. "The Tangent and Velocity Problems", "Problem Solving").
+    english = re.sub(r"^\s*\d+(?:[.-]\d+)*[.)]?\s*", "", title.lower()).strip()
+    if re.match(r"problem[-\s]+solving\b", english):
+        return False
+    return bool(re.search(
+        r"^(?:(?:(?:chapter|section|unit)\s+[\divxlc.-]+|review|additional|"
+        r"supplementary|supplemental|challenge|practice|selected|further|mixed)\s+)*"
+        r"(?:exercises?|problems?|questions?|practice|homework)\b",
+        english,
+    ))
 
 
 def is_answers_title(title: str) -> bool:

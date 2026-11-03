@@ -20,6 +20,7 @@
 | `exercise_extractor/parse_md_exercises.py` | 核心切分器：把 markdown 文本按题号拆成结构化习题（与输入来源无关） |
 | `exercise_extractor/latex_text.py` | 基于 pylatexenc 将 LaTeX 转成 Unicode 纯文本，供标题归一和 bbox 文本匹配使用，不改写输出内容 |
 | `exercise_extractor/exercise_bbox.py` | 题目坐标映射：读取 PaddleOCR-VL 的 `page.json`，按页码、题号和题目文本把结构化习题匹配到 `parsing_res_list`，生成题目级 bbox |
+| `exercise_extractor/textbook_regions.py` | 教材编号小节从 PDF 文字层定位匹配节号的 Exercises 标题，修正隐式习题范围并保留 OCR 页标；扫描件保留节尾搜索 |
 | `exercise_extractor/toc_detect.py` | 纯目录树判断：习题章节识别、前后置内容跳过、是否启用节尾搜索 |
 | `exercise_extractor/answers.py` | 习题答案章节：按小标题切分答案、与习题节点匹配（含题数校验） |
 | `exercise_extractor/html_tables.py` | HTML 表格工具：检测严格闭合的 HTML 表格（detect_html_table）、转 markdown 表格（html_table_to_markdown） |
@@ -248,3 +249,5 @@ oss_prefix="papers")`。
 - `.ocr_cache/` 有 5 个不同 PDF 的处理缓存，其中一个已缓存 244 页 markdown。
 - `temp/` 存放待处理教材 PDF（概率论、线性代数、高数上下册、复变函数等）。
 - git 仓库尚无提交。
+
+- 教材隐式习题区在目录页码映射后先用文字层匹配“节号 + Exercises”（支持换行、Unicode 空白和 PDF 控制字符），命中时覆盖从习题标题到下一目录边界的完整区域；未命中保留三页节尾搜索。正文标题末尾出现 Problems 不自动认作习题集合；英文习题标题须以习题词或章节/复习/补充等集合前缀开头。

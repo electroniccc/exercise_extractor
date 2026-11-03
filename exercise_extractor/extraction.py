@@ -328,11 +328,17 @@ def build_section_tree(
             and not result["has_exercise"]
             and not node.get("children")
             and isinstance(node.get("page_num"), int)
-            and boundary
-            and isinstance(boundary.get("page_num"), int)
+            and (
+                (boundary and isinstance(boundary.get("page_num"), int))
+                or (doc_page_count and re.match(r"^\s*\d+(?:\.\d+)+\b", title))
+            )
         ):
-            boundary_page = boundary["page_num"]
-            tail_start = max(node["page_num"], boundary_page - 3)
+            has_boundary = bool(boundary and isinstance(boundary.get("page_num"), int))
+            boundary_page = boundary["page_num"] if has_boundary else doc_page_count
+            # Without a mapped following TOC entry, create a candidate only.
+            # The PDF text-layer pass must find this section's Exercises heading
+            # and a safe end before any pages are sent to OCR.
+            tail_start = max(node["page_num"], boundary_page - 3) if has_boundary else node["page_num"]
             if boundary_page >= tail_start:
                 # 结束边界取 boundary_page + 1（含边界页），保证至少覆盖一页
                 tail_end = max(tail_start + 1, boundary_page + 1)
@@ -341,10 +347,12 @@ def build_section_tree(
                         "title": title,
                         "has_exercise": True,
                         "implicit": True,
+                        "_section_start_page": node["page_num"],
                         "children": [],
                         "exercise_page_range": [tail_start, tail_end],
-                        "boundary_title": boundary.get("title"),
-                        "boundary_page": boundary_page,
+                        "boundary_title": boundary.get("title") if has_boundary else None,
+                        "boundary_page": boundary_page if has_boundary else None,
+                        "_unbounded_tail": not has_boundary,
                     }
                 )
         if result["has_exercise"] == False and len(result["children"]) == 0:
@@ -479,6 +487,9 @@ def extract_exercises(
                 # 习题的最后一题包进来）。找到本小节标题所在行，只取其后的内容。
                 if parent_title:
                     content = truncate_to_section_heading(content, parent_title)
+                if node.get("_exercise_heading_number"):
+                    from .textbook_regions import truncate_to_exercise_heading
+                    content = truncate_to_exercise_heading(content, node["_exercise_heading_number"])
             else:
                 # 目录页码可能落在上一节正文上（如页面上半是例题、下半才是
                 # "## 习题"）：从本节点自己的标题行开始截取，避免正文混入第一题。

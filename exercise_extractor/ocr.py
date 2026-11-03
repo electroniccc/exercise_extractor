@@ -147,9 +147,14 @@ def build_sections(
     doc.close()
     if args.doc_type == "exercise_book":
         return exercise_book.build_exercise_book_sections(toc_tree, doc_page_count)
-    return build_section_tree(
+    sections = build_section_tree(
         toc_tree, doc_type=args.doc_type, doc_page_count=doc_page_count
     )
+    if args.doc_type == "textbook":
+        from .textbook_regions import locate_text_exercise_regions
+        with pymupdf.open(args.input) as document:
+            locate_text_exercise_regions(sections, document)
+    return sections
 
 
 def create_ocr_pipeline(args: argparse.Namespace) -> PaddleOCRVL:
