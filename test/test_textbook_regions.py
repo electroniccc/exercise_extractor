@@ -7,6 +7,81 @@ from exercise_extractor.toc_detect import is_exercise_title
 
 
 class TextbookRegionTests(unittest.TestCase):
+    def test_chapter_problems_survive_part_boundary_and_appendix_children(self):
+        with pymupdf.open() as doc:
+            for _ in range(27):
+                doc.new_page()
+            for page in (7, 11, 17):
+                doc[page - 1].insert_text((50, 50), 'PROBLEMS\n1. First problem')
+            toc = [
+                {'title': 'Part I', 'page_num': None, 'children': [
+                    {'title': '1 Earlier', 'page_num': 2},
+                    {'title': '2 Numbers', 'page_num': 5},
+                ]},
+                {'title': 'Part II', 'page_num': None, 'children': [
+                    {'title': '3 Functions', 'page_num': 9, 'children': [
+                        {'title': 'Appendix. Ordered Pairs', 'page_num': 13},
+                    ]},
+                    {'title': '4 Graphs', 'page_num': 15, 'children': [
+                        {'title': 'Appendix 1. Vectors', 'page_num': 20},
+                    ]},
+                    {'title': '5 Limits', 'page_num': 23},
+                ]},
+            ]
+            tree = build_section_tree(toc, doc_page_count=len(doc))
+            locate_text_exercise_regions(tree, doc)
+            chapters = {
+                node['title']: node
+                for part in tree for node in part.get('children', [])
+            }
+            for title, start, boundary in (
+                ('2 Numbers', 7, 9),
+                ('3 Functions', 11, 13),
+                ('4 Graphs', 17, 20),
+            ):
+                children = chapters[title].get('children', [])
+                self.assertEqual(len(children), 1, title)
+                self.assertEqual(children[0]['exercise_page_range'], [start, boundary + 1])
+
+    def test_next_chapter_at_page_top_excludes_boundary_page_when_ocr_misses_title(self):
+        with pymupdf.open() as doc:
+            for _ in range(10):
+                doc.new_page()
+            doc[4].insert_text((50, 50), '5 PROBLEMS\n1. First exercise')
+            doc[6].insert_text((50, 50), '42. Last exercise')
+            doc[7].insert_text((50, 60), '6 CONTINUOUS FUNCTIONS')
+            doc[7].insert_text((50, 180), 'If f is an arbitrary function')
+            toc = [{'title': 'Part II', 'page_num': 1, 'children': [
+                {'title': '5 Limits', 'page_num': 2},
+                {'title': '6 Continuous Functions', 'page_num': 8},
+            ]}]
+            tree = build_section_tree(toc, doc_page_count=len(doc))
+            node = tree[0]['children'][0]['children'][0]
+            locate_text_exercise_regions(tree, doc)
+            self.assertEqual(node['exercise_page_range'], [5, 8])
+            node['exercise_content'] = (
+                '<!-- page: 5 -->\nPROBLEMS\n\n1. First exercise.\n'
+                '<!-- page: 7 -->\n42. Last exercise.\n'
+            )
+            extract_exercises(tree)
+            self.assertNotIn('If f is an arbitrary function', node['exercises'][-1]['content'])
+
+    def test_boundary_page_can_still_contain_end_of_previous_exercises(self):
+        with pymupdf.open() as doc:
+            for _ in range(10):
+                doc.new_page()
+            doc[4].insert_text((50, 50), '5 PROBLEMS\n1. First exercise')
+            doc[7].insert_text((50, 60), '42. Continued exercise')
+            doc[7].insert_text((50, 350), '6 CONTINUOUS FUNCTIONS')
+            toc = [{'title': 'Part II', 'page_num': 1, 'children': [
+                {'title': '5 Limits', 'page_num': 2},
+                {'title': '6 Continuous Functions', 'page_num': 8},
+            ]}]
+            tree = build_section_tree(toc, doc_page_count=len(doc))
+            node = tree[0]['children'][0]['children'][0]
+            locate_text_exercise_regions(tree, doc)
+            self.assertEqual(node['exercise_page_range'], [5, 9])
+
     def test_subject_titles_are_not_exercise_collections(self):
         for title in ('4.1 The Area and Distance Problems', '1.4 The Tangent and Velocity Problems', 'Principles of Problem Solving', 'Questioning Assumptions'):
             self.assertFalse(is_exercise_title(title), title)
@@ -45,6 +120,38 @@ class TextbookRegionTests(unittest.TestCase):
         text = '<!-- page: 9 -->\nExample text\n1.1\u2003\n\x03Exercises\n1. Find a limit.'
         self.assertEqual(truncate_to_exercise_heading(text,'1.1'), '<!-- page: 9 -->\n1.1\u2003\n\x03Exercises\n1. Find a limit.')
 
+    def test_chapter_problems_heading_expands_tail_and_truncates_prose(self):
+        with pymupdf.open() as doc:
+            for _ in range(22): doc.new_page()
+            doc[10].insert_text((50, 50), 'Chapter discussion\nPROBLEl\\IS\n1. Prove a property.')
+            toc = [{'title': 'Part I', 'page_num': 2, 'children': [
+                {'title': '1 Basic Properties of Numbers', 'page_num': 3},
+                {'title': '2 Numbers of Various Sorts', 'page_num': 20},
+            ]}]
+            tree = build_section_tree(toc, doc_page_count=len(doc))
+            node = tree[0]['children'][0]['children'][0]
+            self.assertEqual(node['exercise_page_range'], [17, 21])
+            locate_text_exercise_regions(tree, doc)
+            self.assertEqual(node['exercise_page_range'], [11, 21])
+            self.assertEqual(node['_exercise_heading_number'], '1')
+            node['exercise_content'] = '<!-- page: 11 -->\nChapter discussion\n\n## PROBLEMS\n\n1. Prove a property.'
+            extract_exercises(tree)
+            self.assertEqual(len(node['exercises']), 1)
+            self.assertNotIn('Chapter discussion', node['exercises'][0]['content'])
+
+    def test_chapter_problems_mentioned_in_prose_do_not_expand_tail(self):
+        with pymupdf.open() as doc:
+            for _ in range(22): doc.new_page()
+            doc[10].insert_text((50, 50), 'These problems are discussed below.\nUse Exercises 1 and 2.')
+            toc = [{'title': 'Part I', 'page_num': 2, 'children': [
+                {'title': '1 Basic Properties of Numbers', 'page_num': 3},
+                {'title': '2 Numbers of Various Sorts', 'page_num': 20},
+            ]}]
+            tree = build_section_tree(toc, doc_page_count=len(doc))
+            node = tree[0]['children'][0]['children'][0]
+            locate_text_exercise_regions(tree, doc)
+            self.assertEqual(node['exercise_page_range'], [17, 21])
+
     def test_last_numbered_section_stops_at_appendix(self):
         with pymupdf.open() as doc:
             for _ in range(15): doc.new_page()
@@ -77,6 +184,73 @@ class TextbookRegionTests(unittest.TestCase):
 
 
 class TextbookPipelineIntegrationTests(unittest.TestCase):
+    def test_build_sections_keeps_problems_across_parts_and_before_appendix(self):
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from exercise_extractor.ocr import build_sections
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / 'book.pdf'
+            with pymupdf.open() as doc:
+                for _ in range(22):
+                    doc.new_page()
+                doc[6].insert_text((50, 50), 'PROBLEMS\n1. Chapter two problem')
+                doc[10].insert_text((50, 50), 'PROBLEMS\n1. Chapter three problem')
+                doc[16].insert_text((50, 50), 'PROBLEMS\n1. Chapter four problem')
+                doc.save(source)
+            toc = [
+                {'title': 'Part I', 'page_num': None, 'children': [
+                    {'title': '1 Earlier', 'page_num': 2},
+                    {'title': '2 Numbers', 'page_num': 5},
+                ]},
+                {'title': 'Part II', 'page_num': None, 'children': [
+                    {'title': '3 Functions', 'page_num': 9, 'children': [
+                        {'title': 'Appendix. Ordered Pairs', 'page_num': 13},
+                    ]},
+                    {'title': '4 Graphs', 'page_num': 15, 'children': [
+                        {'title': 'Appendix 1. Vectors', 'page_num': 20},
+                    ]},
+                ]},
+            ]
+            args = SimpleNamespace(
+                input=str(source), doc_type='textbook', model_dir=tmp, ocr_cache=tmp
+            )
+            with patch('exercise_extractor.ocr.toc_forge.bookmark_pdf',
+                       return_value=SimpleNamespace(toc_tree=toc)):
+                sections = build_sections(args)
+            chapters = {
+                node['title']: node
+                for part in sections for node in part.get('children', [])
+            }
+            self.assertEqual(chapters['2 Numbers']['children'][0]['exercise_page_range'][0], 7)
+            self.assertEqual(chapters['3 Functions']['children'][0]['exercise_page_range'][0], 11)
+            self.assertEqual(chapters['4 Graphs']['children'][0]['exercise_page_range'][0], 17)
+
+    def test_build_sections_locates_unnumbered_chapter_problems(self):
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from exercise_extractor.ocr import build_sections
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / 'book.pdf'
+            with pymupdf.open() as doc:
+                for _ in range(22): doc.new_page()
+                doc[10].insert_text((50, 50), 'PROBLEl\\IS\n1. First problem')
+                doc.save(source)
+            toc = [{'title': 'Part I', 'page_num': 2, 'children': [
+                {'title': '1 Basic Properties of Numbers', 'page_num': 3},
+                {'title': '2 Numbers of Various Sorts', 'page_num': 20},
+            ]}]
+            args = SimpleNamespace(input=str(source), doc_type='textbook', model_dir=tmp, ocr_cache=tmp)
+            with patch('exercise_extractor.ocr.toc_forge.bookmark_pdf', return_value=SimpleNamespace(toc_tree=toc)):
+                sections = build_sections(args)
+            node = sections[0]['children'][0]['children'][0]
+            self.assertEqual(node['exercise_page_range'], [11, 21])
+
     def test_build_sections_uses_physical_pages_and_text_exercise_headings(self):
         import tempfile
         from pathlib import Path

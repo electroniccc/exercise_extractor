@@ -55,6 +55,26 @@ EXERCISE_RANGE_RE = re.compile(
     + _NUMBER_SEPARATOR
     + r"\*{0,2}(?!\d)\s*"
 )
+# 英文教材常把同一要求写在连续题号前，如 “35–38 Find the domain.”。
+# 这行没有独立题号分隔符，只有后面确实紧跟起始题号时才作为共用要求。
+SHARED_INSTRUCTION_RE = re.compile(
+    r"^\s*(?:T\s+)?(\d{1,3})\s*[‐‑‒–—−－\-~～〜]\s*(\d{1,3})"
+    r"(?:[.:：])?\s+(\S.*)$"
+)
+SHARED_RANGE_ONLY_RE = re.compile(
+    r"^\s*(\d{1,3})\s*[‐‑‒–—−－\-~～〜]\s*(\d{1,3})\s*$"
+)
+SHARED_IN_EXERCISES_RE = re.compile(
+    r"^\s*(?:In|For)\s+(?:Exercises?|Problems?|Questions?)\s+"
+    r"(\d{1,3})\s*([‐‑‒–—−－\-~～〜]|and)\s*(\d{1,3})"
+    r"\s*[,.:：]\s*(\S.*)$",
+    re.IGNORECASE,
+)
+_NUMBERED_HTML_DIV_RE = re.compile(
+    r"^\s*<div\b[^>]*>\s*(\d{1,3}\s*[.．、)）])\s*</div>\s*$",
+    re.IGNORECASE,
+)
+_IMAGE_TAG_RE = re.compile(r"<img\b", re.IGNORECASE)
 _NUMBER_RANGE_LABEL_RE = re.compile(
     r"\s*(\d{1,3})\s*[—\-~～〜]\s*(\d{1,3})\s*"
 )
@@ -271,6 +291,17 @@ def normalize_section(text: str) -> str:
     return re.sub(r"[\s*^{}$]+", "", normalized)
 
 
+def _section_heading_matches(heading: str | None, title: str) -> bool:
+    """Match a TOC exercise title with an optional printed chapter prefix."""
+    actual = normalize_section(heading or "").casefold()
+    expected = normalize_section(title).casefold()
+    if not expected:
+        return False
+    return actual == expected or bool(
+        re.fullmatch(rf"chapter\d+{re.escape(expected)}", actual)
+    )
+
+
 # 泛化习题字样：只有 "习题/练习/作业" 之类，不带编号或知识点
 _GENERIC_SECTION_RE = re.compile(
     r"^(练习题|习题|练习|作业|exercise|exercises|problem|problems|"
@@ -294,12 +325,11 @@ def truncate_to_section_heading(content: str, section_title: str) -> str:
     找到本小节标题（如 "### 1.6 曲线和域"）所在行，丢弃其前面的内容；
     找不到匹配标题时原样返回。
     """
-    title_norm = normalize_section(section_title)
     lines = content.split("\n")
     for i, line in enumerate(lines):
         if HEADING_RE.match(line):
             heading_text = re.sub(r"^#+\s*", "", line)
-            if normalize_section(heading_text) == title_norm:
+            if _section_heading_matches(heading_text, section_title):
                 return "\n".join(lines[i:])
     return content
 
@@ -311,12 +341,11 @@ def truncate_before_heading(content: str, section_title: str) -> str:
     找到边界节点的标题行（如 "### §1.2 复变函数"）后丢弃其后的内容，
     避免把下一节的内容当成本小节的节尾习题；找不到匹配标题时原样返回。
     """
-    title_norm = normalize_section(section_title)
     lines = content.split("\n")
     for i, line in enumerate(lines):
         if HEADING_RE.match(line):
             heading_text = re.sub(r"^#+\s*", "", line)
-            if normalize_section(heading_text) == title_norm:
+            if _section_heading_matches(heading_text, section_title):
                 return "\n".join(lines[:i])
     return content
 
@@ -721,6 +750,7 @@ def split_exercises(
 
     规则（结构驱动，不针对特定教材）：
     - 行首 "N + 分隔符" 且题号单调递增 → 新题
+    - "N–M 共用要求" 紧接 N 号题时 → 原文复制到 N 至 M 号题的题干
     - "# 开头的标题行" → 结束当前题、重置题号序列，标题记为小节名（section）
     - 子题 (1)（2）(a)、公式、表格等一律归到当前题
     - 没有任何编号时，整段内容存为 {"number": "__preamble__"}
@@ -755,6 +785,8 @@ def split_exercises(
     in_solution = False
     current_marker_explicit = False
     solution_numbered_steps_seen = False
+    shared_instruction: tuple[int, int, str, int | None] | None = None
+    skip_shared_until = 0
 
     def flush() -> None:
         nonlocal current, current_num, current_sep, current_section
@@ -783,10 +815,19 @@ def split_exercises(
     content = content.replace("\r\n", "\n").replace("\r", "\n")
     lines = content.split("\n")
     for idx, line in enumerate(lines):
+        if idx < skip_shared_until:
+            skipped_page = PAGE_MARKER_RE.match(line)
+            if skipped_page:
+                current_page = int(skipped_page.group(1))
+            continue
         m_page = PAGE_MARKER_RE.match(line)
         if m_page:
             current_page = int(m_page.group(1))
             continue
+
+        html_number = _NUMBERED_HTML_DIV_RE.match(line)
+        if html_number:
+            line = html_number.group(1)
 
         # 显示公式内的数字（尤其是 74.000、1.001 等）绝不是题号。公式可以
         # 单行闭合，也可以跨多行；在块内仅原样归入当前题目。
@@ -827,6 +868,66 @@ def split_exercises(
                 in_solution = False
                 current_marker_explicit = False
                 solution_numbered_steps_seen = False
+                shared_instruction = None
+                continue
+
+        range_heading = SHARED_INSTRUCTION_RE.match(line)
+        range_only_heading = SHARED_RANGE_ONLY_RE.match(line)
+        prose_range_heading = SHARED_IN_EXERCISES_RE.match(line)
+        if range_heading or range_only_heading or prose_range_heading:
+            heading = range_heading or range_only_heading or prose_range_heading
+            first = int(heading.group(1))
+            last = int(heading.group(3 if prose_range_heading else 2))
+            next_index = None
+            found_number = None
+            found_number_index = None
+            for candidate_index in range(idx + 1, min(idx + 40, len(lines))):
+                candidate = lines[candidate_index]
+                if HEADING_RE.match(candidate):
+                    break
+                numbered_div = _NUMBERED_HTML_DIV_RE.match(candidate)
+                next_number = EXERCISE_NUM_RE.match(
+                    numbered_div.group(1) if numbered_div else candidate
+                )
+                if next_number:
+                    found_number = int(next_number.group(1))
+                    found_number_index = candidate_index
+                    if found_number == first:
+                        next_index = candidate_index
+                    break
+            synthesize_first_number = False
+            if (
+                next_index is None
+                and last == first + 1
+                and found_number == last
+                and found_number_index is not None
+            ):
+                image_indexes = [
+                    i for i in range(idx + 1, found_number_index)
+                    if _IMAGE_TAG_RE.search(lines[i])
+                ]
+                if len(image_indexes) == 2:
+                    shared_image, first_question_image = image_indexes
+                    if (
+                        all(not line.strip() for line in lines[shared_image + 1:first_question_image])
+                        and all(not line.strip() for line in lines[first_question_image + 1:found_number_index])
+                    ):
+                        next_index = first_question_image
+                        synthesize_first_number = True
+            if (
+                first < last <= first + 50
+                and not (
+                    prose_range_heading
+                    and prose_range_heading.group(2).lower() == "and"
+                    and last != first + 1
+                )
+                and next_index is not None
+            ):
+                instruction = "\n".join(lines[idx:next_index]).strip()
+                shared_instruction = (first, last, instruction, current_page)
+                if synthesize_first_number:
+                    lines.insert(next_index, f"{first}.")
+                skip_shared_until = next_index
                 continue
 
         solution_marker = SOLUTION_START_RE.match(line)
@@ -948,6 +1049,14 @@ def split_exercises(
                 # leading 是上一题的尾巴，接到第一道题前面；若第一道题是 1. 则丢弃
                 current = leading
             leading = []
+            shared_page = None
+            if shared_instruction is not None:
+                first, last, instruction, shared_page = shared_instruction
+                if len(num_key) == 1 and first <= num_key[0] <= last:
+                    current.extend((instruction, ""))
+                else:
+                    shared_instruction = None
+                    shared_page = None
             current.append(stripped)
             current_num = label
             current_sep = sep
@@ -958,7 +1067,7 @@ def split_exercises(
             )
             solution_numbered_steps_seen = False
             prev_key = num_key
-            exercise_start_page = current_page
+            exercise_start_page = shared_page if shared_page is not None else current_page
             exercise_end_page = current_page
         else:
             # 子题 (1)、公式、表格等，或题号未递增（OCR 重复）的情况，都归到当前题
@@ -969,6 +1078,7 @@ def split_exercises(
                 exercise_end_page = current_page
 
     flush()
+    exercises = _split_missing_numbered_image_question(exercises)
     # 末尾悬空的标题（后面没有题号）不属于任何习题，丢弃；
     # 若整个内容都没有编号，则原样存到 __preamble__，避免信息丢失
     if pending and not exercises:
@@ -993,6 +1103,51 @@ def split_exercises(
     return exercises
 
 
+def _split_missing_numbered_image_question(exercises: list[Exercise]) -> list[Exercise]:
+    """双题共用要求后仅有两张独立图片时，恢复漏识别的第二个题号。"""
+    result: list[Exercise] = []
+    for index, item in enumerate(exercises):
+        result.append(item)
+        if index + 1 >= len(exercises):
+            continue
+        lines = item.get("content", "").splitlines()
+        if not lines:
+            continue
+        heading = SHARED_INSTRUCTION_RE.match(lines[0])
+        if not heading:
+            continue
+        first, last = int(heading.group(1)), int(heading.group(2))
+        next_number = exercises[index + 1].get("number")
+        if (
+            last != first + 1
+            or item.get("number") != str(first)
+            or next_number != str(last + 1)
+        ):
+            continue
+        image_indexes = [i for i, line in enumerate(lines) if _IMAGE_TAG_RE.search(line)]
+        if len(image_indexes) != 2:
+            continue
+        first_image, second_image = image_indexes
+        if any(line.strip() for line in lines[first_image + 1:second_image]):
+            continue
+        if any(line.strip() for line in lines[second_image + 1:]):
+            continue
+        prefix_lines = lines[:first_image]
+        if any(
+            line.strip() and not re.match(r"^\s*\([a-zA-Z]\)", line)
+            for line in prefix_lines[1:]
+        ):
+            continue
+        prefix = "\n".join(prefix_lines).strip()
+        item["content"] = f"{prefix}\n\n{lines[first_image]}"
+        result.append({
+            **item,
+            "number": str(last),
+            "content": f"{prefix}\n\n{lines[second_image]}",
+        })
+    return result
+
+
 def filter_exercises_by_section(
     exercises: list[Exercise], section_title: str
 ) -> list[Exercise]:
@@ -1001,14 +1156,10 @@ def filter_exercises_by_section(
     归一化比较（忽略空白与 LaTeX/星号噪声）；若没有任何习题带上该小节名
     （OCR 漏掉小节标题等），则保留全部，避免误删。
     """
-    title_norm = normalize_section(section_title)
-    section_norms = {
-        normalize_section(e.get("section")) for e in exercises
-    }
-    if title_norm in section_norms:
+    if any(_section_heading_matches(e.get("section"), section_title) for e in exercises):
         return [
             e
             for e in exercises
-            if normalize_section(e.get("section")) == title_norm
+            if _section_heading_matches(e.get("section"), section_title)
         ]
     return exercises

@@ -44,6 +44,10 @@ logger = logging.getLogger(__name__)
 
 # 图注/图引用："图 2-12"、"图2-12"、"图2.12" 等
 _FIGURE_REF_RE = re.compile(r"图\s*(\d{1,2})\s*[-—–.．]\s*(\d{1,2})")
+_ENGLISH_FIGURE_REF_RE = re.compile(
+    r"\b(?:figure|fig\.?)\s*(\d{1,3})(?:\s*[-.．]\s*(\d{1,3}))?\b",
+    re.IGNORECASE,
+)
 # 图片行：<div ...><img src="..." /></div> 等
 _IMAGE_LINE_RE = re.compile(r"<img\s+[^>]*src=\"[^\"]+\"[^>]*>")
 # 子图标签行：<div ...>(a)</div>、"（1）" 等，夹在子图之间、图注之前
@@ -84,6 +88,12 @@ def _figure_caption_key(line: str) -> str | None:
     if m:
         return f"图{m.group(1)}-{m.group(2)}"
     m = re.fullmatch(
+        r"(?:figure|fig\.?)\s*(\d{1,3})(?:\s*[-.．]\s*(\d{1,3}))?",
+        text, re.IGNORECASE,
+    )
+    if m:
+        return f"Figure{m.group(1)}" + (f"-{m.group(2)}" if m.group(2) else "")
+    m = re.fullmatch(
         r"([\u4e00-\u9fff]{1,10}?)(\d{1,2}(?:[.．]\d{1,2})+)\s*题图", text
     )
     if m:
@@ -95,19 +105,43 @@ def extract_figures(content: str) -> tuple[str, dict[str, list[str]]]:
     """抽出内容里的全部配图，按图片下方的图注归类。
 
     返回 (带图注占位标记的内容, {图键: [图片行..., 图注行]})。
-    默认图注在图片下方：从上一个图注到当前图注之间的图片都归当前图注，
-    所以同一图注下的多张子图会全部归到一起；图注位置留占位标记，
-    切分后按占位标记或题内引用把图插回；没有图注跟随的图片被丢弃。
+    紧跟图片的图注（允许空行和子图标签）归到同一图组，图注位置留占位
+    标记，切分后按占位标记或题内引用把图插回。没有图注的图片保留原位，
+    由题号切分决定归属。
     """
     figures: dict[str, list[str]] = {}
     pending: list[str] = []
     kept: list[str] = []
-    for line in content.split("\n"):
+    lines = content.split("\n")
+    # OCR 有时将独立图注放在图片前面。只调整紧邻图片的独立图注，
+    # 避免把正文中的 Figure 引用当作图注移动。
+    index = 0
+    while index < len(lines):
+        if _figure_caption_key(lines[index]) is None:
+            index += 1
+            continue
+        previous = index - 1
+        while previous >= 0 and not lines[previous].strip():
+            previous -= 1
+        if previous >= 0 and _IMAGE_LINE_RE.search(lines[previous]):
+            index += 1
+            continue
+        image_at = index + 1
+        while image_at < len(lines) and not lines[image_at].strip():
+            image_at += 1
+        if image_at < len(lines) and _IMAGE_LINE_RE.search(lines[image_at]):
+            caption = lines.pop(index)
+            lines.insert(image_at, caption)
+            index = image_at + 1
+        else:
+            index += 1
+    for line in lines:
         if _IMAGE_LINE_RE.search(line):
             pending.append(line)
             continue
-        if pending and _SUBLABEL_RE.match(line):
-            # 子图标签（(a)(b)(c)(d)）随当前图组走，避免切分后散落到别的题
+        if pending and (not line.strip() or _SUBLABEL_RE.match(line)):
+            # 空行和子图标签随当前图组走；遇到下一道题等正文时立即结算，
+            # 避免把无图注图片跨题归给后面的图注。
             pending.append(line)
             continue
         key = _figure_caption_key(line)
@@ -117,7 +151,10 @@ def extract_figures(content: str) -> tuple[str, dict[str, list[str]]]:
             kept.append(f"<!-- figure: {key} -->")
             pending = []
             continue
+        kept.extend(pending)
+        pending = []
         kept.append(line)
+    kept.extend(pending)
     return "\n".join(kept), figures
 
 
@@ -152,15 +189,17 @@ def _attach_figures_to_text(
         result.append(line)
         if not mentions:
             continue
-        m = _FIGURE_REF_RE.search(line)
-        if not m:
-            continue
-        key = f"图{m.group(1)}-{m.group(2)}"
-        if key in figures and key not in attached:
-            result.append("")
-            result.extend(figures[key])
-            attached.add(key)
-            changed = True
+        keys = [f"图{m.group(1)}-{m.group(2)}" for m in _FIGURE_REF_RE.finditer(line)]
+        keys.extend(
+            f"Figure{m.group(1)}" + (f"-{m.group(2)}" if m.group(2) else "")
+            for m in _ENGLISH_FIGURE_REF_RE.finditer(line)
+        )
+        for key in keys:
+            if key in figures and key not in attached:
+                result.append("")
+                result.extend(figures[key])
+                attached.add(key)
+                changed = True
     return "\n".join(result) if changed else text
 
 
@@ -235,6 +274,27 @@ def build_section_tree(
     logger.info(
         "doc_type=%s, 节尾搜索=%s", doc_type, "开" if use_tail_search else "关"
     )
+    # Part 等无页码目录项可能隔开相邻章节。跨层级找下一章，供最后
+    # 一个章节的章末习题确定边界；普通同级边界仍优先使用。
+    numbered_chapters: list[TocNode] = []
+
+    def collect_numbered_chapters(nodes: list[TocNode]) -> None:
+        for entry in nodes:
+            if (
+                re.match(r"^\s*\d+\s+\S", entry.get("title", ""))
+                and isinstance(entry.get("page_num"), int)
+                and not is_exercise_title(entry["title"])
+                and not is_skippable_title(entry["title"])
+            ):
+                numbered_chapters.append(entry)
+            collect_numbered_chapters(entry.get("children", []))
+
+    collect_numbered_chapters(toc_tree)
+    next_chapter = {
+        id(current): following
+        for current, following in zip(numbered_chapters, numbered_chapters[1:])
+        if following["page_num"] > current["page_num"]
+    }
 
     def get_exercise_section(
         node: TocNode,
@@ -245,6 +305,8 @@ def build_section_tree(
         # 本节点的结束边界 = 下一个兄弟节点；若为最后一个子节点，则上溯取
         # 最近一层祖先的 next（边界逐级下传，支持任意层级深度）
         boundary = node_next or ancestor_next
+        if not isinstance((boundary or {}).get("page_num"), int):
+            boundary = next_chapter.get(id(node), boundary)
         # 习题答案类目录项（习题答案/参考答案/答案与提示/习题解答）：
         # 整节都是答案，单独处理，不参与普通习题切分
         if is_answers_title(title):
@@ -323,18 +385,36 @@ def build_section_tree(
         # 边界页（下一目录节点的起始页）要搜：不少教材把习题印在下一节标题
         # 所在页的顶部（如 §1.1 的习题与 §1.2 的标题同页）。串入的下一节内容
         # 由 extract_exercises 里的“截断到边界标题行”处理。
+        tail_children = node.get("children", [])
+        skippable_children = [
+            child for child in tail_children if is_skippable_title(child["title"])
+        ]
+        tail_boundary = boundary
+        for child in skippable_children:
+            child_page = child.get("page_num")
+            if (
+                isinstance(child_page, int)
+                and isinstance(node.get("page_num"), int)
+                and child_page > node["page_num"]
+                and (
+                    not tail_boundary
+                    or not isinstance(tail_boundary.get("page_num"), int)
+                    or child_page < tail_boundary["page_num"]
+                )
+            ):
+                tail_boundary = child
         if (
             use_tail_search
             and not result["has_exercise"]
-            and not node.get("children")
+            and (not tail_children or len(skippable_children) == len(tail_children))
             and isinstance(node.get("page_num"), int)
             and (
-                (boundary and isinstance(boundary.get("page_num"), int))
+                (tail_boundary and isinstance(tail_boundary.get("page_num"), int))
                 or (doc_page_count and re.match(r"^\s*\d+(?:\.\d+)+\b", title))
             )
         ):
-            has_boundary = bool(boundary and isinstance(boundary.get("page_num"), int))
-            boundary_page = boundary["page_num"] if has_boundary else doc_page_count
+            has_boundary = bool(tail_boundary and isinstance(tail_boundary.get("page_num"), int))
+            boundary_page = tail_boundary["page_num"] if has_boundary else doc_page_count
             # Without a mapped following TOC entry, create a candidate only.
             # The PDF text-layer pass must find this section's Exercises heading
             # and a safe end before any pages are sent to OCR.
@@ -350,7 +430,7 @@ def build_section_tree(
                         "_section_start_page": node["page_num"],
                         "children": [],
                         "exercise_page_range": [tail_start, tail_end],
-                        "boundary_title": boundary.get("title") if has_boundary else None,
+                        "boundary_title": tail_boundary.get("title") if has_boundary else None,
                         "boundary_page": boundary_page if has_boundary else None,
                         "_unbounded_tail": not has_boundary,
                     }
