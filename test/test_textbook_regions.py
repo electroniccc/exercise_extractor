@@ -184,6 +184,66 @@ class TextbookRegionTests(unittest.TestCase):
 
 
 class TextbookPipelineIntegrationTests(unittest.TestCase):
+    def test_section_exercises_share_project_opening_page(self):
+        with pymupdf.open() as doc:
+            for _ in range(9):
+                doc.new_page()
+            doc[3].insert_text((50, 50), '2.6 Exercises\n48. Differentiate.')
+            # The running header names the project, but the left columns still
+            # contain the preceding section's last exercises.
+            doc[4].insert_text((340, 35), 'LABORATORY PROJECT FAMILIES OF CURVES')
+            doc[4].insert_text((50, 100), '49. A late exercise')
+            doc[4].insert_text((50, 500), 'LABORATORY PROJECT CAS FAMILIES OF CURVES')
+            toc = [{'title': '2 Derivatives', 'page_num': 1, 'children': [
+                {'title': '2.6 Implicit Differentiation', 'page_num': 2,
+                 'children': [{'title': 'Laboratory Project • Families of Curves',
+                               'page_num': 5}]},
+                {'title': '2.7 Rates of Change', 'page_num': 7},
+            ]}]
+            tree = build_section_tree(toc, doc_page_count=len(doc))
+            locate_text_exercise_regions(tree, doc)
+            section = tree[0]['children'][0]
+            self.assertEqual([child['title'] for child in section['children']], [
+                '2.6 Implicit Differentiation',
+                'Laboratory Project • Families of Curves',
+            ])
+            exercises, project = section['children']
+            project_exercises = project['children'][0]
+            self.assertEqual(exercises['exercise_page_range'], [4, 6])
+            exercises['exercise_content'] = (
+                '<!-- page: 4 -->\n## 2.6 Exercises\n48. Differentiate.\n'
+                '<!-- page: 5 -->\n49. A late exercise.\n'
+                '## LABORATORY PROJECT CAS FAMILIES OF CURVES\n1. Project task.\n2. Second task.'
+            )
+            project_exercises['exercise_content'] = (
+                '<!-- page: 5 -->\n49. A late exercise.\n'
+                '## LABORATORY PROJECT CAS FAMILIES OF CURVES\n1. Project task.\n2. Second task.'
+            )
+            extract_exercises(tree)
+            self.assertEqual([e.get('original_number') for e in exercises['exercises']], ['48', '49'])
+            self.assertEqual([e['number'] for e in project_exercises['exercises']], ['1', '2'])
+
+    def test_numbered_section_exercises_before_project_are_retained(self):
+        with pymupdf.open() as doc:
+            for _ in range(15):
+                doc.new_page()
+            doc[7].insert_text((50, 50), '4.4 Exercises\n1. Integrate')
+            doc[9].insert_text((50, 50), '2. Another integral')
+            doc[10].insert_text((50, 50),
+                                'WRITING PROJECT\nNEWTON, LEIBNIZ, AND THE INVENTION OF CALCULUS')
+            toc = [{'title': '4 Integrals', 'page_num': 2, 'children': [
+                {'title': '4.4 Indefinite Integrals', 'page_num': 3,
+                 'children': [{'title': 'Writing Project • Newton, Leibniz, and the Invention of Calculus',
+                               'page_num': 11}]},
+                {'title': '4.5 Substitution', 'page_num': 13},
+            ]}]
+            tree = build_section_tree(toc, doc_page_count=len(doc))
+            locate_text_exercise_regions(tree, doc)
+            section = tree[0]['children'][0]
+            exercises = [child for child in section['children'] if child.get('implicit')]
+            self.assertEqual(len(exercises), 1)
+            self.assertEqual(exercises[0]['exercise_page_range'], [8, 11])
+
     def test_build_sections_keeps_problems_across_parts_and_before_appendix(self):
         import tempfile
         from pathlib import Path

@@ -297,9 +297,24 @@ def _section_heading_matches(heading: str | None, title: str) -> bool:
     expected = normalize_section(title).casefold()
     if not expected:
         return False
-    return actual == expected or bool(
+    if actual == expected or bool(
         re.fullmatch(rf"chapter\d+{re.escape(expected)}", actual)
-    )
+    ):
+        return True
+    # Project headings often carry a small badge (for example CAS) absent from
+    # the contents page. The printed heading also omits the TOC bullet.
+    expected_words = re.findall(r"[a-z0-9]+", title.casefold())
+    actual_words = re.findall(r"[a-z0-9]+", (heading or "").casefold())
+    if (len(expected_words) < 3 or expected_words[1] != "project"
+            or actual_words[:2] != expected_words[:2]
+            or len(actual_words) > len(expected_words) + 2):
+        return False
+    expected_rest = iter(expected_words[2:])
+    wanted = next(expected_rest, None)
+    for word in actual_words[2:]:
+        if word == wanted:
+            wanted = next(expected_rest, None)
+    return wanted is None
 
 
 # 泛化习题字样：只有 "习题/练习/作业" 之类，不带编号或知识点

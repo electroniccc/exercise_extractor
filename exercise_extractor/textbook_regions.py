@@ -6,6 +6,8 @@ No OCR is performed here. Scanned PDFs retain the existing tail search.
 import re
 from difflib import SequenceMatcher
 
+from .parse_md_exercises import _section_heading_matches
+
 
 def _heading_pattern(number):
     n = re.escape(number)
@@ -47,13 +49,22 @@ def _boundary_starts_at_page_top(page, title):
     target = re.sub(r"[^a-z0-9]", "", title.lower())
     if not target:
         return False
+    top_match = False
+    later_match = False
     for block in page.get_text("blocks"):
-        if block[6] != 0 or block[1] > page.rect.height * 0.2:
+        if block[6] != 0:
             continue
         block_text = re.sub(r"[^a-z0-9]", "", block[4].lower())
-        if block_text == target:
-            return True
-    return False
+        match = (block_text.startswith(target)
+                 or block_text.startswith("section" + target)
+                 or _section_heading_matches(block[4], title))
+        if match and block[1] <= page.rect.height * 0.2:
+            top_match = True
+        elif match:
+            later_match = True
+    # A running header can name the next project while the previous section's
+    # exercises still fill the columns above its actual heading on this page.
+    return top_match and not later_match
 
 
 def locate_text_exercise_regions(sections, document):

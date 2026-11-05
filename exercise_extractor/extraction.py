@@ -390,6 +390,18 @@ def build_section_tree(
             child for child in tail_children if is_skippable_title(child["title"])
         ]
         tail_boundary = boundary
+        numbered_section = bool(re.match(r"^\s*\d+(?:\.\d+)+\b", title))
+        # A numbered section may contain a project or other subentry after its
+        # own exercises.  Use that first child as the exercise search boundary.
+        if numbered_section and isinstance(node.get("page_num"), int):
+            for child in tail_children:
+                child_page = child.get("page_num")
+                if (isinstance(child_page, int)
+                    and child_page > node["page_num"]
+                    and (not tail_boundary
+                         or not isinstance(tail_boundary.get("page_num"), int)
+                         or child_page < tail_boundary["page_num"])):
+                    tail_boundary = child
         for child in skippable_children:
             child_page = child.get("page_num")
             if (
@@ -406,7 +418,10 @@ def build_section_tree(
         if (
             use_tail_search
             and not result["has_exercise"]
-            and (not tail_children or len(skippable_children) == len(tail_children))
+            and (not tail_children or len(skippable_children) == len(tail_children)
+                 or (numbered_section and not any(
+                     is_exercise_title(child["title"]) for child in tail_children
+                 )))
             and isinstance(node.get("page_num"), int)
             and (
                 (tail_boundary and isinstance(tail_boundary.get("page_num"), int))
@@ -422,8 +437,7 @@ def build_section_tree(
             if boundary_page >= tail_start:
                 # 结束边界取 boundary_page + 1（含边界页），保证至少覆盖一页
                 tail_end = max(tail_start + 1, boundary_page + 1)
-                result["children"].append(
-                    {
+                implicit_node = {
                         "title": title,
                         "has_exercise": True,
                         "implicit": True,
@@ -434,7 +448,12 @@ def build_section_tree(
                         "boundary_page": boundary_page if has_boundary else None,
                         "_unbounded_tail": not has_boundary,
                     }
-                )
+                # The section's exercises precede any project or reading
+                # subentry, including when both begin on one PDF page.
+                if numbered_section and tail_children:
+                    result["children"].insert(0, implicit_node)
+                else:
+                    result["children"].append(implicit_node)
         if result["has_exercise"] == False and len(result["children"]) == 0:
             return None
         return result
