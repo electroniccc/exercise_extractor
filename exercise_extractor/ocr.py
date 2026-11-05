@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import tempfile
+import time
 
 import pymupdf
 import toc_forge
@@ -117,6 +118,8 @@ def build_sections(
         logger.warning("未配置 toc_forge API key，目录识别 API 调用可能鉴权失败")
     if not toc_api_base_url:
         logger.warning("未配置 toc_forge API base URL，目录识别 API 调用可能失败")
+    toc_started = time.perf_counter()
+    logger.info("toc_forge 开始: input=%s", os.path.basename(args.input))
     bookmark_result = toc_forge.bookmark_pdf(
         args.input,
         "./temp",
@@ -128,6 +131,7 @@ def build_sections(
         vllm_name=toc_vllm_name,
         **toc_engine_kwargs,
     )
+    logger.info("toc_forge 完成: elapsed=%.1fs", time.perf_counter() - toc_started)
     # toc_forge 0.3+ 已聚合本次目录识别所有实际 LLM 请求的 usage。目录
     # 缓存命中时数字为零，仍报告该次操作，供宿主统一留痕。
     report_usage(

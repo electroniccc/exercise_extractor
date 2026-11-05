@@ -533,6 +533,11 @@ def combine_section_pages(
                         page_markdown_path, "r", encoding="utf-8", errors="ignore"
                     ) as f:
                         content = f.read()
+                    if node.get("_exercise_heading_number"):
+                        from .textbook_reading_order import ordered_exercise_page
+                        content = ordered_exercise_page(
+                            markdown_path, page_num, node, content
+                        )
                     content = rewrite_img_path(content, page_num, markdown_path)
                     exercise_content += f"\n{page_marker(page_num)}\n{content}\n"
             node["exercise_content"] = exercise_content

@@ -3,6 +3,7 @@
 import argparse
 import logging
 import os
+import time
 
 from . import answers, exampaper, exercise_book
 from .extraction import combine_section_pages, extract_exercises
@@ -54,10 +55,13 @@ def run_pipeline(
     if args.output:
         ensure_output_dir_empty(args.output)
 
+    section_build_started = time.perf_counter()
+    logger.info("目录与习题区域识别开始: input=%s", os.path.basename(args.input))
     exercise_sections = build_sections(
         args,
         usage_callback=getattr(args, "llm_usage_callback", None),
     )
+    logger.info("目录与习题区域识别完成: elapsed=%.1fs", time.perf_counter() - section_build_started)
     file_hash = compute_file_hash(args.input)
     logger.info(
         "filename: %s, hash: %s, output: %s",
@@ -136,10 +140,13 @@ def iter_sections(
         ensure_output_dir_empty(args.output)
         os.makedirs(args.output, exist_ok=True)
 
+    section_build_started = time.perf_counter()
+    logger.info("目录与习题区域识别开始: input=%s", os.path.basename(args.input))
     exercise_sections = build_sections(
         args,
         usage_callback=getattr(args, "llm_usage_callback", None),
     )
+    logger.info("目录与习题区域识别完成: elapsed=%.1fs", time.perf_counter() - section_build_started)
     file_hash = compute_file_hash(args.input)
     logger.info("filename: %s, hash: %s", os.path.basename(args.input), file_hash)
     markdown_path = os.path.join(
