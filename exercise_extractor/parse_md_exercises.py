@@ -827,7 +827,11 @@ def split_exercises(
             exercise_end_page = None
 
     # 统一换行符，避免 \r\n / \r 影响行首匹配
-    content = content.replace("\r\n", "\n").replace("\r", "\n")
+    from .numbered_math_arrays import expand_numbered_math_arrays
+
+    content = expand_numbered_math_arrays(
+        content.replace("\r\n", "\n").replace("\r", "\n")
+    )
     lines = content.split("\n")
     for idx, line in enumerate(lines):
         if idx < skip_shared_until:
