@@ -2,11 +2,51 @@ import unittest
 import pymupdf
 
 from exercise_extractor.extraction import build_section_tree, extract_exercises
-from exercise_extractor.textbook_regions import _is_new_part, locate_text_exercise_regions, truncate_to_exercise_heading
+from exercise_extractor.textbook_regions import _is_new_part, locate_text_exercise_regions, prepare_generic_numbered_sections, truncate_to_exercise_heading
 from exercise_extractor.toc_detect import is_exercise_title
 
 
 class TextbookRegionTests(unittest.TestCase):
+    def test_generic_heading_on_page_end_matches_question_on_next_page(self):
+        with pymupdf.open() as doc:
+            for _ in range(5):
+                doc.new_page()
+            doc[0].insert_text((50, 50), 'Exercises')
+            doc[1].insert_text((50, 50), '193\n3.8.1. First exercise')
+            doc[2].insert_text((50, 50), 'Exercises')
+            doc[3].insert_text((50, 50), '196\n3.9.1. Next exercise')
+            _, evidence = prepare_generic_numbered_sections([], doc)
+            self.assertEqual(evidence, {'3.8': 1, '3.9': 3})
+
+    def test_generic_heading_followed_by_prose_does_not_take_next_page_question(self):
+        with pymupdf.open() as doc:
+            for _ in range(5):
+                doc.new_page()
+            doc[0].insert_text((50, 50), 'Exercises\nDiscussion continues here.')
+            doc[1].insert_text((50, 50), '3.1.1. Not established as an exercise')
+            doc[2].insert_text((50, 50), 'Exercises\n3.2.1. First exercise')
+            doc[3].insert_text((50, 50), 'Exercises\n3.3.1. Second exercise')
+            _, evidence = prepare_generic_numbered_sections([], doc)
+            self.assertNotIn('3.1', evidence)
+            self.assertEqual(evidence, {'3.2': 3, '3.3': 4})
+
+    def test_generic_headings_need_multiple_section_numbered_exercise_groups(self):
+        with pymupdf.open() as doc:
+            for _ in range(3):
+                doc.new_page()
+            doc[0].insert_text((50, 50), 'Exercises\n1.1.1. First question')
+            doc[1].insert_text((50, 50), 'Exercises\n1. Second question')
+            toc = [{'title': '1.1 First', 'page_num': 1, 'children': [
+                {'title': '1.1.1 Subtopic', 'page_num': 1}]}]
+            unchanged, evidence = prepare_generic_numbered_sections(toc, doc)
+            self.assertFalse(evidence)
+            self.assertEqual(unchanged, toc)
+            doc[2].insert_text((50, 50), 'Exercises\n1.2.1. Another question')
+            prepared, evidence = prepare_generic_numbered_sections(toc, doc)
+            self.assertEqual(evidence, {'1.1': 1, '1.2': 3})
+            self.assertEqual(prepared[0]['children'], [])
+            self.assertTrue(toc[0]['children'])
+
     def test_chapter_problems_survive_part_boundary_and_appendix_children(self):
         with pymupdf.open() as doc:
             for _ in range(27):
@@ -184,6 +224,45 @@ class TextbookRegionTests(unittest.TestCase):
 
 
 class TextbookPipelineIntegrationTests(unittest.TestCase):
+    def test_generic_exercises_belong_to_parent_sections_and_exclude_previous(self):
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from exercise_extractor.ocr import build_sections
+        from exercise_extractor.public_schema import flatten_public_sections
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / 'book.pdf'
+            with pymupdf.open() as doc:
+                for _ in range(14):
+                    doc.new_page()
+                doc[3].insert_text((50, 50), 'Exercises\n1.1.1. First question')
+                doc[7].insert_text((50, 50), 'Exercises\n1.2.1. Second question')
+                doc.save(source)
+            toc = [{'title': '1 Chapter', 'page_num': 1, 'children': [
+                {'title': '1.1 First', 'page_num': 2, 'children': [
+                    {'title': '1.1.1 Subtopic', 'page_num': 3}]},
+                {'title': '1.2 Second', 'page_num': 5},
+                {'title': '1.3 Empty', 'page_num': 8},
+                {'title': '1.4 Next', 'page_num': 12},
+            ]}]
+            args = SimpleNamespace(input=str(source), doc_type='textbook', model_dir=tmp, ocr_cache=tmp)
+            with patch('exercise_extractor.ocr.toc_forge.bookmark_pdf', return_value=SimpleNamespace(toc_tree=toc)):
+                tree = build_sections(args)
+            first = tree[0]['children'][0]['children'][0]
+            self.assertEqual(first['title'], '1.1 First')
+            self.assertEqual(first['exercise_page_range'][0], 4)
+            first['exercise_content'] = '<!-- page: 4 -->\n## Exercises\n1.1.1. First question.\n1.1.2. Another question.\n<!-- page: 5 -->\n## 1.2 Second\n'
+            second = tree[0]['children'][1]['children'][0]
+            second['exercise_content'] = '<!-- page: 8 -->\n## Exercises\n1.2.1. Second question.\n1.2.2. Another question.\n## 1.3 Empty\n'
+            extract_exercises(tree)
+            self.assertEqual([e.get('original_number', e['number']) for e in first['exercises']], ['1.1.1', '1.1.2'])
+            self.assertEqual([e.get('original_number', e['number']) for e in second['exercises']], ['1.2.1', '1.2.2'])
+            self.assertFalse(any(n['title'] == '1.3 Empty' for n in tree[0]['children']))
+            public = flatten_public_sections(tree)
+            self.assertEqual([section['title'] for section in public], ['1.1 First', '1.2 Second'])
+
     def test_section_exercises_share_project_opening_page(self):
         with pymupdf.open() as doc:
             for _ in range(9):

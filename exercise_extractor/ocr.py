@@ -151,13 +151,16 @@ def build_sections(
     doc.close()
     if args.doc_type == "exercise_book":
         return exercise_book.build_exercise_book_sections(toc_tree, doc_page_count)
-    sections = build_section_tree(
-        toc_tree, doc_type=args.doc_type, doc_page_count=doc_page_count
-    )
+    generic_numbered = {}
+    if args.doc_type == "textbook":
+        from .textbook_regions import prepare_generic_numbered_sections
+        with pymupdf.open(args.input) as document:
+            toc_tree, generic_numbered = prepare_generic_numbered_sections(toc_tree, document)
+    sections = build_section_tree(toc_tree, doc_type=args.doc_type, doc_page_count=doc_page_count)
     if args.doc_type == "textbook":
         from .textbook_regions import locate_text_exercise_regions
         with pymupdf.open(args.input) as document:
-            locate_text_exercise_regions(sections, document)
+            locate_text_exercise_regions(sections, document, generic_numbered)
     return sections
 
 

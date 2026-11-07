@@ -4,6 +4,7 @@ No OCR is performed here. Scanned PDFs retain the existing tail search.
 """
 
 import re
+from copy import deepcopy
 from difflib import SequenceMatcher
 
 from .parse_md_exercises import _section_heading_matches
@@ -21,6 +22,37 @@ def _heading_pattern(number):
 
 _BACK_MATTER = re.compile(r"^\s*(?:APPENDIX|APPENDICES|INDEX|BIBLIOGRAPHY|REFERENCES)\b", re.IGNORECASE | re.MULTILINE)
 _CHAPTER = re.compile(r"^\s*CHAPTER\s+(\d+)\b", re.IGNORECASE | re.MULTILINE)
+
+
+def prepare_generic_numbered_sections(toc, document):
+    """Recognize unnumbered Exercises headings followed by section-numbered questions."""
+    found = {}
+    for index, page in enumerate(document):
+        text = page.get_text()
+        for heading in re.finditer(r"(?im)^\s*Exercises\s*$", text):
+            after = text[heading.end():heading.end() + 700]
+            if not text[heading.end():].strip() and index + 1 < len(document):
+                # The heading can be the last line on a page, with the first
+                # question following the running header on the next page.
+                after = document[index + 1].get_text()[:700]
+            question = re.search(r"(?m)^\s*(\d+\.\d+)\.\d+\.\s+", after)
+            if question:
+                found.setdefault(question[1], index + 1)
+    if len(found) < 2:
+        return toc, {}
+    result = deepcopy(toc)
+
+    def walk(nodes):
+        for node in nodes:
+            match = re.match(r"^\s*(\d+\.\d+)\s", node.get("title", ""))
+            if match and match[1] in found:
+                # Third-level TOC entries are prose subtopics; the exercise
+                # numbering identifies the parent as the exercise section.
+                node['children'] = [child for child in node.get('children', [])
+                                    if not re.match(r'^\s*' + re.escape(match[1]) + r'\.\d+\b', child.get('title', ''))]
+            walk(node.get('children', []))
+    walk(result)
+    return result, found
 
 
 def _generic_heading(text):
@@ -67,7 +99,7 @@ def _boundary_starts_at_page_top(page, title):
     return top_match and not later_match
 
 
-def locate_text_exercise_regions(sections, document):
+def locate_text_exercise_regions(sections, document, generic_numbered=None):
     retained = []
     for node in sections:
         if node.get("implicit"):
@@ -76,6 +108,30 @@ def locate_text_exercise_regions(sections, document):
             start = node.get("_section_start_page")
             boundary = node.get("boundary_page")
             unbounded = node.get("_unbounded_tail")
+            generic_page = (generic_numbered or {}).get(number[1]) if number else None
+            if generic_page and start <= generic_page <= (boundary or len(document)):
+                end = min(boundary or len(document), len(document))
+                if unbounded:
+                    for page in range(generic_page + 1, end + 1):
+                        if _is_new_part(document[page - 1].get_text(), number[1]):
+                            end = page - 1
+                            break
+                node['exercise_page_range'] = [generic_page, end + 1]
+                node['_generic_exercise_heading'] = True
+                node['_exercise_heading_number'] = number[1]
+                locate_text_exercise_regions(node.get('children', []), document, generic_numbered)
+                retained.append(node)
+                continue
+            if generic_numbered and number and start and boundary:
+                # Do not attribute the preceding section's numbered exercises
+                # to this section when both share its opening page.
+                opening = document[start - 1].get_text()
+                prefixes = re.findall(r'(?m)^\s*(\d+\.\d+)\.\d+\.\s+', opening)
+                section_text = '\n'.join(document[page - 1].get_text()
+                                         for page in range(start, min(boundary, len(document)) + 1))
+                own_questions = re.search(r'(?m)^\s*' + re.escape(number[1]) + r'\.\d+\.\s+', section_text)
+                if prefixes and not own_questions and not _heading_pattern(number[1]).search(section_text):
+                    continue
             if (number or chapter_number) and start and (boundary or unbounded):
                 heading_number = (number or chapter_number)[1]
                 pattern = _heading_pattern(heading_number)
@@ -113,7 +169,7 @@ def locate_text_exercise_regions(sections, document):
                     first, last = node["exercise_page_range"]
                     if first < boundary < last:
                         node["exercise_page_range"] = [first, boundary]
-        locate_text_exercise_regions(node.get("children", []), document)
+        locate_text_exercise_regions(node.get("children", []), document, generic_numbered)
         if node.get("has_exercise") or node.get("is_answers") or node.get("children"):
             retained.append(node)
     sections[:] = retained
@@ -129,3 +185,11 @@ def truncate_to_exercise_heading(content, number):
     markers = list(re.finditer(r"<!--\s*page:\s*\d+\s*-->", content[:match.start()]))
     prefix = markers[-1][0] + "\n" if markers else ""
     return prefix + content[match.start():]
+
+
+def truncate_to_generic_exercise_heading(content):
+    match = _generic_heading(content)
+    if not match:
+        return content
+    markers = list(re.finditer(r"<!--\s*page:\s*\d+\s*-->", content[:match.start()]))
+    return (markers[-1][0] + "\n" if markers else "") + content[match.start():]

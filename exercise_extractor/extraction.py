@@ -591,7 +591,10 @@ def extract_exercises(
                 # 习题的最后一题包进来）。找到本小节标题所在行，只取其后的内容。
                 if parent_title:
                     content = truncate_to_section_heading(content, parent_title)
-                if node.get("_exercise_heading_number"):
+                if node.get("_generic_exercise_heading"):
+                    from .textbook_regions import truncate_to_generic_exercise_heading
+                    content = truncate_to_generic_exercise_heading(content)
+                elif node.get("_exercise_heading_number"):
                     from .textbook_regions import truncate_to_exercise_heading
                     content = truncate_to_exercise_heading(content, node["_exercise_heading_number"])
             else:
@@ -604,7 +607,7 @@ def extract_exercises(
             if node.get("boundary_title"):
                 content = truncate_before_heading(content, node["boundary_title"])
             # 边界标题写法可能与页内标题不一致：按边界页第一个标题行兜底截断
-            if node.get("boundary_page"):
+            if node.get("boundary_page") and not node.get("_generic_exercise_heading"):
                 content = truncate_before_page_heading(
                     content, node["boundary_page"]
                 )
@@ -643,6 +646,10 @@ def extract_exercises(
                     if e["number"] != "__preamble__"
                     and normalize_section(e.get("section")) not in known_sections
                 ]
+                if node.get("_generic_exercise_heading"):
+                    prefix = node["_exercise_heading_number"] + "."
+                    node["exercises"] = [e for e in node["exercises"]
+                                         if str(e["number"]).startswith(prefix)]
                 if not node["exercises"]:
                     return None
                 # 区域限制性判断：题号要基本连续才算题目区域

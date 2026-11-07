@@ -1,0 +1,21 @@
+<!-- page: 1 -->
+## 3.8 Stable Laws
+Some discussion.
+## Exercises
+<!-- page: 2 -->
+3.8.1. First stable laws question.
+
+3.8.2. Second stable laws question.
+
+## 3.9 Infinitely Divisible Distributions
+Section discussion.
+<!-- page: 3 -->
+The last result in this section.
+## Exercises
+<!-- page: 4 -->
+3.9.1. First distributions question.
+
+3.9.2. Second distributions question.
+
+## 3.10 Limit Theorems
+Next section discussion.

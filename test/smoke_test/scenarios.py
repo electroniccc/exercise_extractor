@@ -77,6 +77,56 @@ def test_textbook_fake_cache() -> None:
         )
 
 
+def test_textbook_english_exercise_heading_page_break() -> None:
+    """英文习题标题位于页尾，下一页先是习题再开始新节。"""
+    import re
+    from pathlib import Path
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    import pymupdf
+    from exercise_extractor.extraction import combine_section_pages, extract_exercises
+    from exercise_extractor.ocr import build_sections
+    from exercise_extractor.public_schema import flatten_public_sections
+
+    fixture = load_scenario('textbook_english_exercise_heading_page_break.txt')
+    pages = re.split(r'<!-- page: \d+ -->\s*', fixture)[1:]
+    toc = [{'title': '3 Chapter', 'page_num': 1, 'children': [
+        {'title': '3.8 Stable Laws', 'page_num': 1},
+        {'title': '3.9 Infinitely Divisible Distributions', 'page_num': 2},
+        {'title': '3.10 Limit Theorems', 'page_num': 4},
+    ]}]
+    with tempfile.TemporaryDirectory() as tmp:
+        source = Path(tmp) / 'book.pdf'
+        md_path = Path(tmp) / 'markdown'
+        with pymupdf.open() as doc:
+            for page_number, content in enumerate(pages, 1):
+                page = doc.new_page()
+                plain = re.sub(r'(?m)^#+\s*', '', content)
+                page.insert_text((50, 50), plain)
+                page_dir = md_path / f'page_{page_number}'
+                page_dir.mkdir(parents=True)
+                (page_dir / 'page.md').write_text(content, encoding='utf-8')
+                (page_dir / 'page.json').write_text('{"parsing_res_list": []}', encoding='utf-8')
+                (page_dir / 'READY').write_text('ready\n', encoding='utf-8')
+            doc.save(source)
+        args = SimpleNamespace(input=str(source), doc_type='textbook', model_dir=tmp, ocr_cache=tmp)
+        with patch('exercise_extractor.ocr.toc_forge.bookmark_pdf', return_value=SimpleNamespace(toc_tree=toc)):
+            sections = build_sections(args)
+        combine_section_pages(sections, str(md_path))
+        extract_exercises(sections)
+        public = flatten_public_sections(sections)
+        actual = {section['title']: [e['original_number'] for e in section['exercises']]
+                  for section in public}
+        check('页尾 Exercises 归属正确小节', actual == {
+            '3.8 Stable Laws': ['3.8.1', '3.8.2'],
+            '3.9 Infinitely Divisible Distributions': ['3.9.1', '3.9.2'],
+        }, str(actual))
+        check('页尾 Exercises 保留跨页来源', len(public) == 2
+              and public[0]['exercises'][0]['pages'] == [2, 2]
+              and public[1]['exercises'][0]['pages'] == [4, 4], str(public))
+
+
 def test_exercise_book_prefix() -> None:
     """习题集“习题 N.”前缀归一。"""
     from exercise_extractor import exercise_book
@@ -724,6 +774,7 @@ def test_figure_group() -> None:
 
 # 场景文件 → 测试函数注册表
 SCENARIO_TESTS = {
+    "textbook_english_exercise_heading_page_break.txt": test_textbook_english_exercise_heading_page_break,
     "textbook_fake_cache_page1.txt": test_textbook_fake_cache,
     "textbook_decimal_display_formula.txt": test_textbook_decimal_display_formula,
     "textbook_chapter_prefixed_numbers.txt": test_textbook_chapter_prefixed_numbers,
