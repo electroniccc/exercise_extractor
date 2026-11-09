@@ -96,10 +96,13 @@ def build_exercise_book_sections(
         if (
             boundary
             and isinstance(boundary.get("page_num"), int)
-            and boundary["page_num"] > start_page
+            and boundary["page_num"] >= start_page
         ):
             end_page = boundary["page_num"] + 1  # 含边界页，提取时按边界标题截断
             result["boundary_page"] = boundary["page_num"]
+        elif boundary and isinstance(boundary.get("page_num"), int):
+            logger.warning("章节页码倒序，限制提取范围: title=%r start=%s next=%s", title, start_page, boundary["page_num"])
+            end_page = start_page + 1
         elif doc_page_count:
             end_page = doc_page_count + 1
         result["has_exercise"] = True
