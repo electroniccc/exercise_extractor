@@ -15,7 +15,7 @@ def _heading_pattern(number):
     decoration = r"(?:[^\S\r\n]|[#*])*"
     gap = r"[\s#*\x00-\x08\x0b\x0c\x0e-\x1f]+"
     return re.compile(
-        rf"^{decoration}(?:{n}{gap}Exercises?|Exercises?{gap}{n}){decoration}$",
+        rf"^{decoration}(?:(?:SECTION{gap})?{n}{gap}Exercises?|Exercises?{gap}{n}){decoration}$",
         re.IGNORECASE | re.MULTILINE,
     )
 

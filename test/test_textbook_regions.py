@@ -7,6 +7,22 @@ from exercise_extractor.toc_detect import is_exercise_title
 
 
 class TextbookRegionTests(unittest.TestCase):
+    def test_section_prefixed_exercises_expand_earlier_than_tail_window(self):
+        with pymupdf.open() as doc:
+            for _ in range(13): doc.new_page()
+            doc[3].insert_text((50, 50), 'SECTION 1.1 EXERCISES\n1. First question')
+            tree = build_section_tree([{'title': '1 Functions', 'page_num': 1, 'children': [
+                {'title': '1.1 Review of Functions', 'page_num': 2},
+                {'title': '1.2 Basic Classes of Functions', 'page_num': 12},
+            ]}], doc_page_count=len(doc))
+            node = tree[0]['children'][0]['children'][0]
+            self.assertEqual(node['exercise_page_range'], [9, 13])
+            locate_text_exercise_regions(tree, doc)
+            self.assertEqual(node['exercise_page_range'], [4, 13])
+            self.assertEqual(truncate_to_exercise_heading(
+                '<!-- page: 4 -->\nExample text\n## SECTION 1.1 EXERCISES\n1. First question', '1.1'),
+                '<!-- page: 4 -->\n## SECTION 1.1 EXERCISES\n1. First question')
+
     def test_generic_heading_on_page_end_matches_question_on_next_page(self):
         with pymupdf.open() as doc:
             for _ in range(5):
