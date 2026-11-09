@@ -5,6 +5,69 @@ from exercise_extractor.parse_md_exercises import split_exercises
 
 
 class SharedInstructionTests(unittest.TestCase):
+    def test_unnumbered_following_exercises_instructions_appear_only_before_first_question(self):
+        exercises = split_exercises(
+            '<!-- page: 29 -->\n'
+            '### SECTION 1.1 EXERCISES\n\n'
+            'For the following exercises, sketch the curves below by eliminating '
+            'the parameter. Give the orientation of the curve.\n\n'
+            '1. $x=t^2$\n\n'
+            '2. $x=\\cos(t)$\n\n'
+            'For the following exercises, eliminate the parameter and sketch '
+            'the graphs.\n\n'
+            '3. $x=2t$\n\n'
+            '4. $x=3t$',
+            keep_leading=False,
+            check_section_end=False,
+        )
+        self.assertEqual([item['number'] for item in exercises], ['1', '2', '3', '4'])
+        self.assertTrue(exercises[0]['content'].startswith('For the following exercises, sketch'))
+        self.assertNotIn('For the following exercises', exercises[1]['content'])
+        self.assertTrue(exercises[2]['content'].startswith('For the following exercises, eliminate'))
+        self.assertNotIn('For the following exercises', exercises[3]['content'])
+        self.assertNotIn('eliminate the parameter and sketch the graphs', exercises[1]['content'])
+        self.assertEqual([item['pages'] for item in exercises], [[29, 29]] * 4)
+
+    def test_following_exercises_instruction_crosses_page_boundary(self):
+        exercises = split_exercises(
+            '1. Earlier question.\n\n'
+            '<!-- page: 56 -->\n'
+            'For the following exercises, use technology\n'
+            'to sketch the parametric equations.\n\n'
+            '<!-- page: 57 -->\n'
+            '2. $x=t$\n\n'
+            '3. $y=t^2$',
+            check_section_end=False,
+        )
+        self.assertNotIn('use technology', exercises[0]['content'])
+        self.assertTrue(exercises[1]['content'].startswith('For the following exercises, use technology'))
+        self.assertIn('to sketch the parametric equations.', exercises[1]['content'])
+        self.assertNotIn('use technology', exercises[2]['content'])
+        self.assertEqual(exercises[1]['pages'], [56, 57])
+
+    def test_following_exercises_without_next_question_stays_with_previous_question(self):
+        exercises = split_exercises(
+            '1. Discuss the phrase below.\n\n'
+            'For the following exercises, no question follows.',
+            check_section_end=False,
+        )
+        self.assertIn('For the following exercises', exercises[0]['content'])
+
+    def test_public_markdown_keeps_unnumbered_instruction_once(self):
+        sections = list(extract_exercise_from_markdown(
+            '# Exercises\n\n'
+            'For the following exercises, sketch the graphs.\n\n'
+            '1. $x=t$\n\n'
+            '2. $y=t^2$',
+            title='Exercises',
+        ))
+        self.assertEqual(len(sections[0]['exercises']), 2)
+        self.assertTrue(sections[0]['exercises'][0]['content'].startswith(
+            'For the following exercises, sketch the graphs.'))
+        self.assertNotIn('For the following exercises', sections[0]['exercises'][1]['content'])
+        self.assertEqual(sections[0]['content']['original'].count(
+            'For the following exercises, sketch the graphs.'), 1)
+
     def test_range_instruction_is_attached_to_each_numbered_question(self):
         exercises = split_exercises(
             '34. Earlier question.\n\n'

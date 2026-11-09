@@ -70,6 +70,10 @@ SHARED_IN_EXERCISES_RE = re.compile(
     r"\s*[,.:：]\s*(\S.*)$",
     re.IGNORECASE,
 )
+FOLLOWING_EXERCISES_RE = re.compile(
+    r"^\s*For\s+the\s+following\s+(?:exercises?|problems?|questions?)\b",
+    re.IGNORECASE,
+)
 _NUMBERED_HTML_DIV_RE = re.compile(
     r"^\s*<div\b[^>]*>\s*(\d{1,3}\s*[.．、)）])\s*</div>\s*$",
     re.IGNORECASE,
@@ -766,6 +770,7 @@ def split_exercises(
     规则（结构驱动，不针对特定教材）：
     - 行首 "N + 分隔符" 且题号单调递增 → 新题
     - "N–M 共用要求" 紧接 N 号题时 → 原文复制到 N 至 M 号题的题干
+    - "For the following exercises" 无编号要求 → 只放在下一道题的题干前
     - "# 开头的标题行" → 结束当前题、重置题号序列，标题记为小节名（section）
     - 子题 (1)（2）(a)、公式、表格等一律归到当前题
     - 没有任何编号时，整段内容存为 {"number": "__preamble__"}
@@ -801,6 +806,7 @@ def split_exercises(
     current_marker_explicit = False
     solution_numbered_steps_seen = False
     shared_instruction: tuple[int, int, str, int | None] | None = None
+    following_instruction: tuple[str, int | None] | None = None
     skip_shared_until = 0
 
     def flush() -> None:
@@ -888,6 +894,32 @@ def split_exercises(
                 current_marker_explicit = False
                 solution_numbered_steps_seen = False
                 shared_instruction = None
+                following_instruction = None
+                continue
+
+        if FOLLOWING_EXERCISES_RE.match(line):
+            # This prose belongs above the next numbered exercise, including
+            # when the instruction is the first text in an implicit section.
+            # Collect wrapped lines and page markers until the next question.
+            next_index = None
+            for candidate_index in range(idx + 1, min(idx + 40, len(lines))):
+                candidate = lines[candidate_index]
+                if HEADING_RE.match(candidate) or FOLLOWING_EXERCISES_RE.match(candidate):
+                    break
+                numbered_div = _NUMBERED_HTML_DIV_RE.match(candidate)
+                numbered_line = numbered_div.group(1) if numbered_div else candidate
+                next_number = EXERCISE_NUM_RE.match(numbered_line)
+                if next_number:
+                    if not prev_key or len(prev_key) != 1 or int(next_number.group(1)) > prev_key[0]:
+                        next_index = candidate_index
+                    break
+            if next_index is not None:
+                instruction = "\n".join(
+                    candidate for candidate in lines[idx:next_index]
+                    if not PAGE_MARKER_RE.match(candidate)
+                ).strip()
+                following_instruction = (instruction, current_page)
+                skip_shared_until = next_index
                 continue
 
         range_heading = SHARED_INSTRUCTION_RE.match(line)
@@ -1069,6 +1101,11 @@ def split_exercises(
                 current = leading
             leading = []
             shared_page = None
+            following_page = None
+            if following_instruction is not None:
+                instruction, following_page = following_instruction
+                current.extend((instruction, ""))
+                following_instruction = None
             if shared_instruction is not None:
                 first, last, instruction, shared_page = shared_instruction
                 if len(num_key) == 1 and first <= num_key[0] <= last:
@@ -1086,7 +1123,11 @@ def split_exercises(
             )
             solution_numbered_steps_seen = False
             prev_key = num_key
-            exercise_start_page = shared_page if shared_page is not None else current_page
+            exercise_start_page = (
+                following_page if following_page is not None
+                else shared_page if shared_page is not None
+                else current_page
+            )
             exercise_end_page = current_page
         else:
             # 子题 (1)、公式、表格等，或题号未递增（OCR 重复）的情况，都归到当前题
