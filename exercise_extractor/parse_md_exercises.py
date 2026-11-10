@@ -741,8 +741,8 @@ def _heading_is_ocr_number(
     if prev_key:
         if len(key) != len(prev_key) or not _keys_continuous(prev_key, key):
             return False
-    # 向后找同模式且连续的题号（到下一个标题/文末为止，限制扫描窗口）
-    for j in range(idx + 1, min(idx + 1 + 40, len(lines))):
+    # 向后找同模式且连续的题号，直到下一个标题。长题可能跨页，固定行数窗口会漏掉首题。
+    for j in range(idx + 1, len(lines)):
         nxt = lines[j]
         if HEADING_RE.match(nxt):
             break
