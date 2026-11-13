@@ -33,6 +33,16 @@ from .utils import compute_file_hash
 logger = logging.getLogger(__name__)
 
 
+def _positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a positive integer") from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
 def parse_args() -> argparse.Namespace:
     """解析命令行参数。"""
     # 本地调试默认模型目录；跨机器可设 EXERCISE_EXTRACTOR_MODEL_DIR 覆盖
@@ -92,7 +102,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--analysis-workers",
-        type=int,
+        type=_positive_int,
         default=None,
         help="习题分析进程数（默认最多 4；1 使用顺序模式）",
     )

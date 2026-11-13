@@ -3394,6 +3394,16 @@ def test_cli_engine_device_args() -> None:
             )
         ),
     )
+    with mock.patch(
+        "sys.argv",
+        ["exercise_extractor", "--input", "/tmp/x.pdf", "--analysis-workers", "0"],
+    ):
+        try:
+            parse_args()
+            invalid_workers_rejected = False
+        except SystemExit as exc:
+            invalid_workers_rejected = exc.code == 2
+    check("CLI 在参数解析阶段拒绝非正 worker 数", invalid_workers_rejected)
     from exercise_extractor.ocr import _toc_ocr_kwargs
 
     synced = type("Args", (), {
