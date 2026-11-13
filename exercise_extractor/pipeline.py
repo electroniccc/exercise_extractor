@@ -6,6 +6,7 @@ import os
 import time
 
 from . import answers, exampaper, exercise_book
+from .analysis import analyze_tree
 from .extraction import combine_section_pages, extract_exercises
 from .exercise_bbox import attach_exercise_bboxes
 from .html_tables import replace_html_tables
@@ -83,12 +84,7 @@ def run_pipeline(
     logger.info("页面拼接完成: elapsed=%.3fs", time.perf_counter() - stage_started)
 
     stage_started = time.perf_counter()
-    if args.doc_type == "exercise_book":
-        exercise_book.extract_exercises(exercise_sections)
-    elif args.doc_type == "exampaper":
-        exampaper.extract_exercises(exercise_sections)
-    else:
-        extract_exercises(exercise_sections)
+    analyze_tree(exercise_sections, args.doc_type)
     logger.info("习题分析完成: elapsed=%.3fs", time.perf_counter() - stage_started)
 
     # exampaper 自带答案/解析处理，不走通用答案章节匹配。WebUI 在用户

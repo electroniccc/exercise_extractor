@@ -26,6 +26,7 @@ def main() -> None:
 
     print("\n== 非场景单元测试 ==")
     unit.test_combine_section_pages_preserves_page_markers()
+    unit.test_analysis_job_matches_sequential_extractors()
     unit.test_unit_boundaries()
     unit.test_toc_and_boundaries()
     unit.test_solution_format_normalization()

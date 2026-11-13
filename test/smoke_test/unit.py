@@ -39,6 +39,134 @@ def test_combine_section_pages_preserves_page_markers() -> None:
         )
 
 
+def test_analysis_job_matches_sequential_extractors() -> None:
+    from copy import deepcopy
+
+    from exercise_extractor.analysis import analyze_section, make_analysis_job, merge_analysis_result
+    from exercise_extractor.extraction import extract_exercises as extract_textbook
+    from exercise_extractor.exercise_book import extract_exercises as extract_book
+    from exercise_extractor.exampaper import extract_exercises as extract_exam
+
+    explicit = {
+        "title": "习题 1-1",
+        "has_exercise": True,
+        "exercise_page_range": [10, 12],
+        "boundary_page": 11,
+        "boundary_title": "第二节",
+        "exercise_content": "<!-- page: 10 -->\n## 习题 1-1\n1. 第一题\n\n<!-- page: 11 -->\n2. 第二题\n\n## 第二节\n9. 不属于本节\n",
+        "children": [],
+    }
+    expected = deepcopy(explicit)
+    extract_textbook([expected])
+    actual = deepcopy(explicit)
+    result = analyze_section(make_analysis_job(actual, "textbook"))
+    merge_analysis_result(actual, result)
+    check(
+        "单节点课本分析保留边界页题目与页码",
+        actual.get("exercises") == expected.get("exercises")
+        and actual.get("exercises", [])[-1].get("pages") == [11, 11],
+        repr(actual.get("exercises")),
+    )
+
+    implicit = {
+        "title": "第一节",
+        "has_exercise": True,
+        "implicit": True,
+        "exercise_page_range": [1, 2],
+        "exercise_content": "介绍正文，没有习题编号。",
+        "children": [],
+    }
+    result = analyze_section(make_analysis_job(implicit, "textbook"))
+    retained = {**implicit, "children": []}
+    kept = merge_analysis_result(retained, result)
+    check("无题隐式节点返回丢弃结果", not kept)
+
+    implicit_with_prefix = {
+        "title": "习题",
+        "has_exercise": True,
+        "implicit": True,
+        "exercise_page_range": [1, 2],
+        "exercise_content": "9. 上节尾题\n\n## 第一节\n1. 本节题目\n",
+        "children": [],
+    }
+    result = analyze_section(
+        make_analysis_job(
+            implicit_with_prefix,
+            "textbook",
+            parent_title="第一节",
+        )
+    )
+    check(
+        "隐式节尾分析使用父标题截掉前置旧题",
+        len(result.patch.get("exercises", [])) == 1
+        and result.patch["exercises"][0]["content"] == "本节题目",
+        repr(result.patch.get("exercises")),
+    )
+
+    from exercise_extractor.analysis import analyze_tree
+
+    tree = [{
+        "title": "第一章",
+        "has_exercise": False,
+        "children": [{
+            **implicit,
+            "children": [{
+                "title": "子习题",
+                "has_exercise": True,
+                "exercise_page_range": [2, 3],
+                "exercise_content": "## 子习题\n1. 子节点题目\n",
+                "children": [],
+            }],
+        }],
+    }]
+    analyze_tree(tree, "textbook")
+    check(
+        "丢弃隐式父节点后其有效子节点仍可访问",
+        [child["title"] for child in tree[0]["children"]] == ["子习题"]
+        and len(tree[0]["children"][0].get("exercises", [])) == 1,
+    )
+
+    book = {
+        "title": "习题集",
+        "has_exercise": True,
+        "no_toc": True,
+        "exercise_content": "## 第一章\n1. 第一题\n\n## 第二章\n1. 第二题\n",
+        "children": [],
+    }
+    expected_book = deepcopy(book)
+    extract_book([expected_book])
+    actual_book = deepcopy(book)
+    merge_analysis_result(actual_book, analyze_section(make_analysis_job(actual_book, "exercise_book")))
+    check(
+        "单节点无目录习题集分析保持分块与重编号",
+        actual_book.get("exercises") == expected_book.get("exercises"),
+    )
+
+    exam = {
+        "title": "试卷",
+        "has_exercise": True,
+        "exampaper": True,
+        "exercise_content": "一、选择题\n1. 题目\nA.甲\nB.乙\n\n参考答案\n一、选择题\n1. B\n",
+        "children": [],
+    }
+    expected_exam = deepcopy(exam)
+    extract_exam([expected_exam])
+    actual_exam = deepcopy(exam)
+    merge_analysis_result(actual_exam, analyze_section(make_analysis_job(actual_exam, "exampaper")))
+    check(
+        "单节点试卷分析保留题型 section 与答案回填",
+        actual_exam.get("exercises") == expected_exam.get("exercises")
+        and actual_exam.get("children") == expected_exam.get("children"),
+    )
+    actual_exam_tree = [deepcopy(exam)]
+    analyze_tree(actual_exam_tree, "exampaper")
+    check(
+        "试卷树分析生成的题型 section 不被重复清空",
+        actual_exam_tree[0].get("children") == expected_exam.get("children")
+        and actual_exam_tree[0].get("exercises") == expected_exam.get("exercises"),
+    )
+
+
 def test_unit_boundaries() -> None:
     from exercise_extractor.parse_md_exercises import (
         filter_exercises_by_section,
