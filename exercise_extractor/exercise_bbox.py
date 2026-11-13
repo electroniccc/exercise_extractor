@@ -134,12 +134,13 @@ def _number_matches(number: str, block_text: str) -> bool:
     return marker.group(1).replace("．", ".") == normalized_number
 
 
-def _match_score(exercise: dict[str, Any], block: dict[str, Any]) -> float:
-    target = _normalize_match_text(str(exercise.get("content") or ""))
+def _match_score(
+    exercise: dict[str, Any], block: dict[str, Any], target: str
+) -> float:
     candidate = block["normalized"]
     if not target or not candidate:
         return 0.0
-    target, candidate = target[:1600], candidate[:1600]
+    candidate = candidate[:1600]
     matcher = SequenceMatcher(None, target, candidate)
     score = matcher.ratio()
     longest = matcher.find_longest_match(0, len(target), 0, len(candidate)).size
@@ -175,13 +176,14 @@ def attach_exercise_bboxes(
             used: set[tuple[int, int]] = set()
             for exercise in node.get("exercises", []):
                 exercise["bbox"] = []
+                target = _normalize_match_text(str(exercise.get("content") or ""))[:1600]
                 best: dict[str, Any] | None = None
                 best_score = 0.0
                 for page in _candidate_pages(exercise, node):
                     for block in blocks_for(page):
                         if (page, block["index"]) in used:
                             continue
-                        score = _match_score(exercise, block)
+                        score = _match_score(exercise, block, target)
                         if score > best_score:
                             best, best_score = block, score
                 if best is None or best_score < MIN_MATCH_SCORE:
