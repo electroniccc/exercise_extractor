@@ -1026,6 +1026,11 @@ def _split_section_exercises(section: TypeSection) -> list[Exercise]:
     return exercises
 
 
+def analyze_type_section(section: TypeSection) -> list[Exercise]:
+    """Pure per-type-section parsing entry point for analysis workers."""
+    return _split_section_exercises(section)
+
+
 def split_inline_answers(exercises: list[Exercise]) -> None:
     """把解析文档里内嵌的【答案】/【解】/【详解】/【分析】拆到对应字段。
 
@@ -1186,7 +1191,10 @@ def _match_tail_answers(
         match_in(block, pool)
 
 
-def extract_exercises(sections: list[SectionNode]) -> None:
+def extract_exercises(
+    sections: list[SectionNode],
+    precomputed_exercises_by_node: dict[int, list[list[Exercise]]] | None = None,
+) -> None:
     """试卷版提取入口：整卷切分题型小节并生成独立 section 子节点。"""
     for node in sections:
         if not node.get("exampaper"):
@@ -1194,8 +1202,14 @@ def extract_exercises(sections: list[SectionNode]) -> None:
         content = node.get("exercise_content", "")
         type_sections, tail_content = split_type_sections(content)
         exercises: list[Exercise] = []
-        for section in type_sections:
-            exercises.extend(_split_section_exercises(section))
+        precomputed = (precomputed_exercises_by_node or {}).get(id(node))
+        for index, section in enumerate(type_sections):
+            parsed = (
+                precomputed[index]
+                if precomputed is not None and index < len(precomputed)
+                else _split_section_exercises(section)
+            )
+            exercises.extend(parsed)
         review_source_by_key = {
             str(section.get("section_key") or "简答题"): "\n".join(
                 section.get("lines", [])

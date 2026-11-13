@@ -10,6 +10,7 @@
 
 import logging
 import re
+from io import StringIO
 
 from .extraction import (
     SectionNode,
@@ -135,45 +136,48 @@ def _renumber(exercises: list[Exercise]) -> None:
 def _extract_no_toc(content: str) -> list[Exercise]:
     """无目录：整本内容按小标题层级切块，每块按题号提取（编号每块独立）。"""
     exercises: list[Exercise] = []
+    for heading, chunk in _no_toc_heading_chunks(content):
+        exercises.extend(_extract_no_toc_chunk(heading, chunk))
+    return exercises
+
+
+def _no_toc_heading_chunks(content: str):
+    """Yield the exact Markdown heading blocks used by the no-TOC parser."""
     current_heading: str | None = None
     current_lines: list[str] = []
 
-    def flush() -> None:
-        nonlocal current_lines
-        if current_heading is None:
-            current_lines = []
-            return
-        chunk = "\n".join(current_lines).strip()
-        current_lines = []
-        if not chunk:
-            return
-        items = split_exercises(
-            chunk,
-            keep_leading=False,
-            check_section_end=False,
-            split_solutions=False,
-        )
-        items = [e for e in items if e.get("number") != "__preamble__"]
-        if not items:
-            return
-        split_solutions_for_section(
-            items, current_heading, doc_type="exercise_book"
-        )
-        for item in items:
-            item["section"] = current_heading
-            if item.get("question_type") != "proof":
-                item["question_type"] = "short_answer"
-        _renumber(items)
-        exercises.extend(items)
-
-    for line in content.split("\n"):
+    for raw_line in StringIO(content):
+        line = raw_line.rstrip("\n")
         if HEADING_RE.match(line):
-            flush()
+            chunk = "\n".join(current_lines).strip()
+            if current_heading is not None and chunk:
+                yield current_heading, chunk
             current_heading = re.sub(r"^#+\s*", "", line).strip()
+            current_lines = []
             continue
         current_lines.append(line)
-    flush()
-    return exercises
+    chunk = "\n".join(current_lines).strip()
+    if current_heading is not None and chunk:
+        yield current_heading, chunk
+
+
+def _extract_no_toc_chunk(heading: str, chunk: str) -> list[Exercise]:
+    items = split_exercises(
+        chunk,
+        keep_leading=False,
+        check_section_end=False,
+        split_solutions=False,
+    )
+    items = [e for e in items if e.get("number") != "__preamble__"]
+    if not items:
+        return []
+    split_solutions_for_section(items, heading, doc_type="exercise_book")
+    for item in items:
+        item["section"] = heading
+        if item.get("question_type") != "proof":
+            item["question_type"] = "short_answer"
+    _renumber(items)
+    return items
 
 
 def extract_exercises(sections: list[SectionNode]) -> None:

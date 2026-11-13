@@ -314,6 +314,68 @@ def test_spawn_pipeline_public_json_matches_sequential() -> None:
     )
 
 
+def test_spawn_semantic_document_chunks_match_sequential() -> None:
+    from copy import deepcopy
+    from exercise_extractor.analysis import analyze_tree
+    from exercise_extractor.exampaper import extract_exercises as extract_exam
+    from exercise_extractor.exercise_book import extract_exercises as extract_book
+
+    book = [{
+        "title": "全书习题",
+        "has_exercise": True,
+        "no_toc": True,
+        "exercise_content": (
+            "## 第一章\n习题 1. 第一章第一题\n练习 2. 第一章第二题\n"
+            "## 第二章\n习题 1. 第二章第一题\n练习 2. 第二章第二题\n"
+            "## 第三章\n1. 第三章第一题\n"
+        ),
+        "children": [],
+    }]
+    expected_book = deepcopy(book)
+    extract_book(expected_book)
+    serial_book = deepcopy(book)
+    parallel_book = deepcopy(book)
+    analyze_tree(serial_book, "exercise_book", 1)
+    analyze_tree(parallel_book, "exercise_book", 2)
+    check(
+        "无目录多标题习题集 worker 1/2 结果相同",
+        serial_book == expected_book and parallel_book == expected_book,
+    )
+    from exercise_extractor.analysis import make_analysis_jobs
+
+    heading_job = next(make_analysis_jobs(book[0], "exercise_book", token=8))
+    check(
+        "无目录分块先归一习题与练习前缀",
+        heading_job.section["exercise_content"].startswith("1. 第一章第一题")
+        and heading_job.token == 8,
+    )
+
+    exam = [{
+        "title": "试卷",
+        "has_exercise": True,
+        "exampaper": True,
+        "exercise_page_range": [1, 5],
+        "exercise_content": (
+            "一、选择题\n1. 选出正确答案\nA.甲\nB.乙\n\n"
+            "二、填空题\n1. 填写结果。\n\n"
+            "参考答案\n一、选择题\n1. B\n二、填空题\n1. 2\n"
+        ),
+        "children": [],
+    }]
+    expected_exam = deepcopy(exam)
+    extract_exam(expected_exam)
+    serial_exam = deepcopy(exam)
+    parallel_exam = deepcopy(exam)
+    analyze_tree(serial_exam, "exampaper", 1)
+    analyze_tree(parallel_exam, "exampaper", 2)
+    check(
+        "试卷题型分块并行后文末答案在父进程回填",
+        serial_exam == expected_exam
+        and parallel_exam == expected_exam
+        and parallel_exam[0]["exercises"][0]["answer"] == "B",
+    )
+
+
 def test_streaming_spawn_order_close_and_output() -> None:
     from exercise_extractor import pipeline
 
@@ -380,6 +442,66 @@ def test_streaming_spawn_order_close_and_output() -> None:
         check(
             "并行流式写出使用来源文件名回退",
             len(written) == 1 and os.path.isfile(os.path.join(output_dir, "report.json")),
+        )
+
+
+def test_streaming_semantic_single_root_sections() -> None:
+    from exercise_extractor import pipeline
+
+    with tempfile.TemporaryDirectory() as tmp:
+        input_path = os.path.join(tmp, "book.pdf")
+        with open(input_path, "wb") as stream:
+            stream.write(b"fake")
+        args = SimpleNamespace(
+            input=input_path, output=None, ocr_cache=tmp,
+            doc_type="exercise_book", analysis_workers=2,
+        )
+        no_toc = [{
+            "title": "全书习题", "has_exercise": True, "no_toc": True,
+            "exercise_page_range": [1, 3], "children": [],
+        }]
+
+        def combine_book(nodes, _cache):
+            nodes[0]["exercise_content"] = (
+                "## 第一章\n1. 第一章题目\n\n## 第二章\n1. 第二章题目\n"
+            )
+
+        with patch.object(pipeline, "build_sections", return_value=no_toc), \
+            patch.object(pipeline, "create_ocr_pipeline", return_value=object()), \
+            patch.object(pipeline, "ocr_pages"), \
+            patch.object(pipeline, "combine_section_pages", side_effect=combine_book), \
+            patch.object(pipeline, "attach_exercise_bboxes"):
+            book_sections = list(pipeline.iter_sections(args))
+        check(
+            "流式无目录习题集按已有标题边界分并行任务",
+            len(book_sections) == 1
+            and [item["content"] for item in book_sections[0]["exercises"]]
+            == ["第一章题目", "第二章题目"],
+        )
+
+        args.doc_type = "exampaper"
+        exam = [{
+            "title": "试卷", "has_exercise": True, "exampaper": True,
+            "exercise_page_range": [1, 4], "children": [],
+        }]
+
+        def combine_exam(nodes, _cache):
+            nodes[0]["exercise_content"] = (
+                "一、选择题\n1. 选择正确答案\nA.甲\nB.乙\n\n"
+                "参考答案\n一、选择题\n1. B\n"
+            )
+
+        with patch.object(pipeline, "build_sections", return_value=exam), \
+            patch.object(pipeline, "create_ocr_pipeline", return_value=object()), \
+            patch.object(pipeline, "ocr_pages"), \
+            patch.object(pipeline, "combine_section_pages", side_effect=combine_exam), \
+            patch.object(pipeline, "attach_exercise_bboxes"):
+            exam_sections = list(pipeline.iter_sections(args))
+        check(
+            "流式试卷按题型并行解析并回填文末答案",
+            len(exam_sections) == 1
+            and exam_sections[0]["title"] == "一、选择题"
+            and exam_sections[0]["exercises"][0]["answer"] == "B",
         )
 
 

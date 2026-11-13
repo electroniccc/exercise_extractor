@@ -9,7 +9,7 @@ from . import answers, exampaper, exercise_book
 from .analysis import (
     analyze_tree,
     iter_analysis_events,
-    make_analysis_job,
+    make_analysis_jobs,
     validate_analysis_workers,
 )
 from .extraction import combine_section_pages, extract_exercises
@@ -218,6 +218,7 @@ def iter_sections(
     if analysis_workers > 1:
         nodes_by_token: dict[int, dict] = {}
         next_token = 0
+        grouped_stream_results: dict[int, list] = {}
 
         def prepare_events(nodes: list, path: str, parent_title: str | None = None):
             nonlocal next_token
@@ -236,7 +237,7 @@ def iter_sections(
                     token = next_token
                     next_token += 1
                     nodes_by_token[token] = node
-                    yield make_analysis_job(
+                    yield from make_analysis_jobs(
                         node,
                         args.doc_type,
                         parent_title=parent_title,
@@ -280,11 +281,33 @@ def iter_sections(
                         write_section_markdown(node, args.output)
                     yield node
                     continue
-                node_path = event.path or event.section.get("title", "")
                 node = nodes_by_token[event.token]
+                node_path = node.get("_section_path") or event.path or event.section.get("title", "")
                 from .analysis import merge_analysis_result
 
-                if not merge_analysis_result(node, result):
+                if event.doc_type == "exercise_book_heading":
+                    if event.part_index == 0:
+                        node["exercises"] = []
+                    node["exercises"].extend(result.patch.get("exercises", []))
+                    if event.part_index + 1 < event.part_count:
+                        continue
+                    keep = True
+                elif event.doc_type == "exampaper_type":
+                    parts = grouped_stream_results.setdefault(event.token, [])
+                    parts.append(result.patch.get("exercises", []))
+                    if event.part_index + 1 < event.part_count:
+                        continue
+                    grouped_stream_results.pop(event.token, None)
+                    exampaper.extract_exercises(
+                        [node],
+                        precomputed_exercises_by_node={
+                            id(node): parts
+                        },
+                    )
+                    keep = True
+                else:
+                    keep = merge_analysis_result(node, result)
+                if not keep:
                     logger.info("流式提取丢弃节点: title=%r path=%r", node.get("title"), node_path)
                     continue
                 if args.doc_type == "exampaper" and node.get("_exampaper_extracted"):

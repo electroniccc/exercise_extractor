@@ -11,7 +11,7 @@ from collections import deque
 from concurrent.futures import ProcessPoolExecutor
 import multiprocessing
 import os
-from typing import Any
+from typing import Any, Iterator
 
 
 @dataclass(frozen=True)
@@ -22,6 +22,8 @@ class AnalysisJob:
     known_sections: tuple[str, ...] = ()
     path: str | None = None
     token: int | None = None
+    part_index: int = 0
+    part_count: int = 1
 
 
 @dataclass(frozen=True)
@@ -176,8 +178,75 @@ def make_analysis_job(
     )
 
 
+def make_analysis_jobs(
+    node: dict[str, Any],
+    doc_type: str,
+    *,
+    parent_title: str | None = None,
+    known_sections: set[str] | None = None,
+    path: str | None = None,
+    token: int | None = None,
+) -> Iterator[AnalysisJob]:
+    """Split single-root inputs only at their established semantic headings."""
+    if doc_type == "exercise_book" and node.get("no_toc"):
+        from .exercise_book import _no_toc_heading_chunks, _normalize_exercise_prefixes
+
+        content = _normalize_exercise_prefixes(node.get("exercise_content", ""))
+        chunk_count = sum(1 for _ in _no_toc_heading_chunks(content))
+        if chunk_count:
+            for index, (heading, chunk) in enumerate(_no_toc_heading_chunks(content)):
+                yield AnalysisJob(
+                    doc_type="exercise_book_heading",
+                    section={"title": heading, "exercise_content": chunk},
+                    path=f"{path}/{heading}" if path else heading,
+                    token=token,
+                    part_index=index,
+                    part_count=chunk_count,
+                )
+            return
+    if doc_type == "exampaper":
+        from .exampaper import split_type_sections
+
+        type_sections, _tail = split_type_sections(node.get("exercise_content", ""))
+        if type_sections:
+            for index, section in enumerate(type_sections):
+                yield AnalysisJob(
+                    doc_type="exampaper_type",
+                    section={"type_section": section},
+                    path=f"{path}/{section.get('title') or section.get('section_key') or index}" if path else str(section.get("title") or index),
+                    token=token,
+                    part_index=index,
+                    part_count=len(type_sections),
+                )
+            return
+    yield make_analysis_job(
+            node,
+            doc_type,
+            parent_title=parent_title,
+            known_sections=known_sections,
+            path=path,
+            token=token,
+        )
+
+
 def analyze_section(job: AnalysisJob) -> AnalysisResult:
     """Analyze one detached section and return a patch for the parent to merge."""
+    if job.doc_type == "exercise_book_heading":
+        from .exercise_book import _extract_no_toc_chunk
+
+        return AnalysisResult(
+            patch={
+                "exercises": _extract_no_toc_chunk(
+                    job.section["title"], job.section["exercise_content"]
+                )
+            }
+        )
+    if job.doc_type == "exampaper_type":
+        from .exampaper import analyze_type_section
+
+        return AnalysisResult(
+            patch={"exercises": analyze_type_section(job.section["type_section"])}
+        )
     node = {**job.section, "children": []}
     sections = [node]
     if job.doc_type == "exercise_book":
@@ -260,21 +329,52 @@ def analyze_tree(
     collect(sections, None, "")
 
     def jobs():
-        for node, parent_title, path in nodes_in_order:
-            yield make_analysis_job(
+        for token, (node, parent_title, path) in enumerate(nodes_in_order):
+            yield from make_analysis_jobs(
                 node,
                 doc_type,
                 parent_title=parent_title,
                 known_sections=known_sections,
                 path=path,
+                token=token,
             )
 
-    for (node, _, path), (job, result) in zip(nodes_in_order, iter_analysis_results(jobs(), analysis_workers)):
+    current_token: int | None = None
+    current_parts: list[list[dict[str, Any]]] = []
+    for job, result in iter_analysis_results(jobs(), analysis_workers):
+        token = job.token or 0
+        if current_token is not None and token != current_token:
+            raise RuntimeError("analysis scheduler returned non-contiguous section parts")
+        current_token = token
+        node, _parent, path = nodes_in_order[token]
         try:
-            keep = merge_analysis_result(node, result)
+            if job.doc_type == "exercise_book_heading":
+                if job.part_index == 0:
+                    node["exercises"] = []
+                node["exercises"].extend(result.patch.get("exercises", []))
+                keep = True
+            elif job.doc_type == "exampaper_type":
+                current_parts.append(result.patch.get("exercises", []))
+                keep = True
+            else:
+                keep = merge_analysis_result(node, result)
         except Exception as exc:
             raise RuntimeError(f"exercise analysis merge failed: {path}") from exc
+
+        if job.part_index + 1 < job.part_count:
+            continue
+        if job.doc_type == "exampaper_type":
+            from .exampaper import extract_exercises
+
+            try:
+                extract_exercises(
+                    [node], precomputed_exercises_by_node={id(node): current_parts}
+                )
+            except Exception as exc:
+                raise RuntimeError(f"exercise analysis merge failed: {path}") from exc
+            current_parts = []
         node["_analysis_discarded"] = not keep
+        current_token = None
 
     def prune(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
         retained: list[dict[str, Any]] = []
