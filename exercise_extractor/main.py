@@ -101,10 +101,21 @@ def parse_args() -> argparse.Namespace:
         help="VL OCR 最大并发数，需与服务端并行数一致 (default: 4)",
     )
     parser.add_argument(
+        "--analysis-multiprocessing",
+        action="store_true",
+        help="显式启用习题分析多进程（默认关闭）",
+    )
+    parser.add_argument(
         "--analysis-workers",
         type=_positive_int,
         default=None,
-        help="习题分析进程数（默认按工作量自动选择，最多 4；1 使用顺序模式）",
+        help="启用多进程时的最大进程数（默认最多 4；1 使用顺序模式）",
+    )
+    parser.add_argument(
+        "--analysis-threshold-mb",
+        type=_positive_int,
+        default=8,
+        help="启用多进程时的最小估算文档大小 MiB (default: 8)",
     )
     parser.add_argument(
         "--vl_rec_api_model_name",

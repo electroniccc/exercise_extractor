@@ -57,18 +57,18 @@ def validate_analysis_workers(workers: int | None) -> int:
 def select_analysis_workers(
     requested: int | None,
     workload_bytes: int,
+    *,
+    enabled: bool = False,
+    threshold_bytes: int = AUTO_PARALLEL_THRESHOLD_BYTES,
 ) -> int:
-    """Use processes automatically only above a conservative input-size floor.
-
-    Eight MiB is deliberately above the largest measured cached sample (about
-    2 MiB), where process startup and serialization outweighed analysis time.
-    Explicit worker counts always take precedence.
-    """
+    """Select process count only when explicitly enabled and above threshold."""
     if requested is not None:
-        return validate_analysis_workers(requested)
-    if workload_bytes < AUTO_PARALLEL_THRESHOLD_BYTES:
+        validate_analysis_workers(requested)
+    if isinstance(threshold_bytes, bool) or not isinstance(threshold_bytes, int) or threshold_bytes < 0:
+        raise ValueError("analysis threshold must be a non-negative integer")
+    if not enabled or requested == 1 or workload_bytes < threshold_bytes:
         return 1
-    return default_analysis_workers()
+    return requested if requested is not None else default_analysis_workers()
 
 
 def estimate_analysis_workload_bytes(
@@ -363,9 +363,14 @@ def merge_analysis_result(node: dict[str, Any], result: AnalysisResult) -> bool:
 
 
 def analyze_tree(
-    sections: list[dict[str, Any]], doc_type: str, analysis_workers: int | None = None
+    sections: list[dict[str, Any]],
+    doc_type: str,
+    analysis_workers: int | None = None,
+    *,
+    analysis_multiprocessing: bool = False,
+    analysis_threshold_bytes: int = AUTO_PARALLEL_THRESHOLD_BYTES,
 ) -> None:
-    """Analyze the tree; auto mode stays serial below the workload threshold."""
+    """Analyze the tree; process workers require explicit opt-in and size threshold."""
     from .parse_md_exercises import normalize_section
 
     known_sections: set[str] = set()
@@ -382,6 +387,8 @@ def analyze_tree(
     workers = select_analysis_workers(
         analysis_workers,
         estimate_analysis_workload_bytes(sections),
+        enabled=analysis_multiprocessing,
+        threshold_bytes=analysis_threshold_bytes,
     )
 
     nodes_in_order: list[tuple[dict[str, Any], str | None, str]] = []

@@ -15,7 +15,9 @@
 - Keep public section and Exercise JSON fields unchanged.
 - Preserve directory order, exercise numbering, answers, page ranges, bbox, and Markdown output.
 - Do not run PaddleOCR, OSS, or shared OCR cache writes in analysis workers.
-- Default worker count is `min(4, available CPUs)`; `analysis_workers=1` is the sequential path.
+- Multiprocessing is disabled by default and requires `analysis_multiprocessing=True` / `--analysis-multiprocessing`.
+- When enabled, use the process pool only when estimated document size meets `analysis_threshold_mb` / `--analysis-threshold-mb` (default 8 MiB).
+- Worker count defaults to `min(4, available CPUs)`; `analysis_workers=1` forces sequential analysis.
 - Bound in-flight analysis tasks to at most `2 * analysis_workers`.
 - Work only at proven section, heading, or question-type boundaries; do not split by page or fixed text size.
 
@@ -55,7 +57,7 @@
 
 **Files:** Modify `exercise_extractor/pipeline.py`, `exercise_extractor/main.py`, `exercise_extractor/api.py`; use `analysis.py`; test in `test/smoke_test/unit.py`.
 
-**Interfaces:** Add CLI `--analysis-workers` and `extract_exercise(..., analysis_workers: int | None = None)`; `None` chooses `min(4, available CPUs)`, positive integer required. Internal scheduler returns results in source order, limits submitted futures to `2 * workers`, and uses `multiprocessing.get_context("spawn")`.
+**Interfaces:** Add CLI `--analysis-multiprocessing`, `--analysis-workers`, `--analysis-threshold-mb` and API parameters `analysis_multiprocessing: bool = False`, `analysis_workers: int | None = None`, `analysis_threshold_mb: int = 8`. Pool creation requires opt-in and workload above threshold. Internal scheduler returns results in source order, limits submitted futures to `2 * workers`, and uses `multiprocessing.get_context("spawn")`.
 
 - [ ] Add tests comparing worker counts 1 and 2 for the same cached section tree, including ordering, a worker failure, and early generator close.
 - [ ] Implement pool scheduling and ordered merge in `run_pipeline`; preserve removal of implicit nodes and descendants.

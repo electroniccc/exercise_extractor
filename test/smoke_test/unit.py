@@ -245,13 +245,30 @@ def test_analysis_worker_auto_threshold() -> None:
     )
     with patch.object(analysis, "default_analysis_workers", return_value=4):
         check(
-            "自动选择对超过阈值的大任务启用受限 worker 数",
-            select_analysis_workers(None, AUTO_PARALLEL_THRESHOLD_BYTES) == 4,
+            "未显式启用时即使大文档也保持顺序执行",
+            select_analysis_workers(None, AUTO_PARALLEL_THRESHOLD_BYTES * 2) == 1,
+        )
+        check(
+            "启用多进程且达到阈值后选择默认 worker 数",
+            select_analysis_workers(
+                None,
+                AUTO_PARALLEL_THRESHOLD_BYTES,
+                enabled=True,
+            ) == 4,
         )
     check(
-        "显式 worker 数覆盖自动阈值",
-        select_analysis_workers(3, 1) == 3
-        and select_analysis_workers(1, AUTO_PARALLEL_THRESHOLD_BYTES * 2) == 1,
+        "进程开关与阈值优先于 worker 数，1 始终顺序执行",
+        select_analysis_workers(3, AUTO_PARALLEL_THRESHOLD_BYTES * 2) == 1
+        and select_analysis_workers(
+            3,
+            AUTO_PARALLEL_THRESHOLD_BYTES,
+            enabled=True,
+        ) == 3
+        and select_analysis_workers(
+            1,
+            AUTO_PARALLEL_THRESHOLD_BYTES * 2,
+            enabled=True,
+        ) == 1,
     )
 
     selected: list[int] = []
@@ -272,8 +289,8 @@ def test_analysis_worker_auto_threshold() -> None:
             "children": [],
         }]
         analysis.analyze_tree(small, "textbook")
-        analysis.analyze_tree(large, "textbook")
-    check("分析管线依据实际拼接文本应用自动策略", selected == [1, 4])
+        analysis.analyze_tree(large, "textbook", analysis_multiprocessing=True)
+    check("分析管线默认关闭多进程，仅启用后按工作量选择", selected == [1, 4])
 
 
 def test_spawn_pipeline_public_json_matches_sequential() -> None:

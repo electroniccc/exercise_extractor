@@ -401,6 +401,8 @@ def extract_exercise(
     vl_rec_api_key: Optional[str] = None,
     document_name: Optional[str] = None,
     analysis_workers: int | None = None,
+    analysis_multiprocessing: bool = False,
+    analysis_threshold_mb: int = 8,
 ) -> Iterator[dict]:
     """提取 PDF 或一张/多张图片中的习题，返回公共 section 迭代器。
 
@@ -427,7 +429,9 @@ def extract_exercise(
     http(s)://endpoint/bucket/对象键）；缺任一项则不启用。
     write_outputs=True 时必须同时给 output_dir，会额外写出每个 section 的
     md/json 以及 report.json；不再写总的 exercises.json。
-    analysis_workers：习题切分进程数；None 时按工作量阈值自动选择（最多 4 个 worker），1 表示顺序执行。
+    analysis_multiprocessing：显式启用习题分析多进程；默认关闭。
+    analysis_workers：启用多进程时的最大进程数；None 时最多使用 4 个 worker，1 表示顺序执行。
+    analysis_threshold_mb：启用多进程时的最小估算文档大小，单位 MiB，默认 8。
 
     返回迭代器：每完成一个有编号习题的 section 就 yield 一个不含
     ``children`` 的公共 JSON object。section 的 ``path`` 使用 ``/`` 记录
@@ -445,6 +449,14 @@ def extract_exercise(
     from .analysis import validate_analysis_workers
 
     validate_analysis_workers(analysis_workers)
+    if not isinstance(analysis_multiprocessing, bool):
+        raise TypeError("analysis_multiprocessing 必须是 bool")
+    if (
+        isinstance(analysis_threshold_mb, bool)
+        or not isinstance(analysis_threshold_mb, int)
+        or analysis_threshold_mb < 1
+    ):
+        raise ValueError("analysis_threshold_mb 必须是正整数")
     model_dir = _resolve_model_dir(model_dir)
     if not model_dir:
         raise ValueError(
@@ -483,6 +495,8 @@ def extract_exercise(
         doc_type=doc_type,
         llm_usage_callback=llm_usage_callback,
         analysis_workers=analysis_workers,
+        analysis_multiprocessing=analysis_multiprocessing,
+        analysis_threshold_mb=analysis_threshold_mb,
     )
     internal_sections = iter_sections(args, write_outputs_enabled=write_outputs)
     document_name = args.document_name

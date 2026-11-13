@@ -113,6 +113,9 @@ sections = list(extract_exercise_from_markdown(
 | `--vl_server_url` | OCR 推理服务地址，默认 `http://localhost:8080/v1`；旧参数名，当前 CLI 使用它配置 `vl_rec_server_url`。 |
 | `--vl_rec_backend` | PaddleOCR-VL 识别后端，默认 `vllm-server`。 |
 | `--vl_rec_max_concurrency` | OCR 服务最大并发数，默认 `4`。 |
+| `--analysis-multiprocessing` | 显式启用习题分析多进程，默认关闭。 |
+| `--analysis-workers` | 多进程启用后的最大进程数；默认最多 `4`。 |
+| `--analysis-threshold-mb` | 启用多进程的最小估算文档大小，默认 `8 MiB`。 |
 | `--vl_rec_api_model_name` | OCR 服务上的模型名，默认 `PaddleOCR-VL-1.6-0.9B`。 |
 | `--vl_rec_api_key`（别名 `--vl-rec-api-key`） | PaddleOCR-VL 推理服务 API key；本地服务通常不需要。 |
 | `--vl_model` | 输出后处理使用的模型名；不是 OCR 推理服务的模型名。 |

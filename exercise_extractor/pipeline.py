@@ -94,6 +94,10 @@ def run_pipeline(
         exercise_sections,
         args.doc_type,
         analysis_workers=getattr(args, "analysis_workers", None),
+        analysis_multiprocessing=getattr(args, "analysis_multiprocessing", False),
+        analysis_threshold_bytes=(
+            getattr(args, "analysis_threshold_mb", 8) * 1024 * 1024
+        ),
     )
     logger.info("习题分析完成: elapsed=%.3fs", time.perf_counter() - stage_started)
 
@@ -217,6 +221,8 @@ def iter_sections(
     analysis_workers = select_analysis_workers(
         requested_workers,
         estimate_analysis_workload_bytes(exercise_sections, markdown_path),
+        enabled=getattr(args, "analysis_multiprocessing", False),
+        threshold_bytes=getattr(args, "analysis_threshold_mb", 8) * 1024 * 1024,
     )
     if analysis_workers > 1:
         nodes_by_token: dict[int, dict] = {}
