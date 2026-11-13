@@ -91,6 +91,12 @@ def parse_args() -> argparse.Namespace:
         help="VL OCR 最大并发数，需与服务端并行数一致 (default: 4)",
     )
     parser.add_argument(
+        "--analysis-workers",
+        type=int,
+        default=None,
+        help="习题分析进程数（默认最多 4；1 使用顺序模式）",
+    )
+    parser.add_argument(
         "--vl_rec_api_model_name",
         type=str,
         default="PaddleOCR-VL-1.6-0.9B",

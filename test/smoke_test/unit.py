@@ -167,6 +167,222 @@ def test_analysis_job_matches_sequential_extractors() -> None:
     )
 
 
+def test_spawn_analysis_scheduler() -> None:
+    from exercise_extractor.analysis import AnalysisJob, iter_analysis_results
+
+    def make_job(title: str) -> AnalysisJob:
+        return AnalysisJob(
+            doc_type="exercise_book",
+            section={
+                "title": title,
+                "has_exercise": True,
+                "exercise_content": f"## {title}\n1. {title} 的题目\n",
+                "children": [],
+            },
+            path=title,
+        )
+
+    jobs = [make_job("第一节"), make_job("第二节"), make_job("第三节")]
+    sequential = [(job.path, result.patch["exercises"]) for job, result in iter_analysis_results(jobs, 1)]
+    parallel = [(job.path, result.patch["exercises"]) for job, result in iter_analysis_results(jobs, 2)]
+    check(
+        "spawn 分析按输入顺序返回且结果等价",
+        parallel == sequential and [path for path, _ in parallel] == ["第一节", "第二节", "第三节"],
+    )
+
+    try:
+        list(iter_analysis_results([AnalysisJob("textbook", {"title": "坏节点", "has_exercise": True, "exercise_content": None}, path="第一章/坏节点")], 2))
+        error_path = ""
+    except RuntimeError as exc:
+        error_path = str(exc)
+    check("spawn worker 异常保留章节路径", "第一章/坏节点" in error_path)
+
+    created: list[str] = []
+
+    def job_source():
+        for index in range(10):
+            title = f"第{index}节"
+            created.append(title)
+            job = make_job(title)
+            if index:
+                job.section["exercise_content"] = (
+                    f"## {title}\n"
+                    + "".join(f"{number}. 含计算负载的题目 {number}\n" for number in range(1, 5001))
+                )
+            yield job
+
+    results = iter_analysis_results(job_source(), 2)
+    first = next(results)
+    results.close()
+    check(
+        "提前关闭分析生成器只预取有界窗口",
+        first[0].path == "第0节" and len(created) <= 4,
+        f"prefetched={len(created)}",
+    )
+
+    from exercise_extractor.api import extract_exercise
+
+    try:
+        extract_exercise("/tmp/not-opened.pdf", analysis_workers=0)
+        api_validation = False
+    except ValueError as exc:
+        api_validation = "analysis_workers" in str(exc)
+    check("公共 API 拒绝非正分析 worker 数", api_validation)
+
+
+def test_spawn_pipeline_public_json_matches_sequential() -> None:
+    from copy import deepcopy
+    from exercise_extractor import pipeline
+    from exercise_extractor.public_schema import public_section_from_node
+
+    source_sections = [{
+        "title": "第一章",
+        "has_exercise": False,
+        "children": [
+            {
+                "title": "习题 1-1",
+                "has_exercise": True,
+                "exercise_page_range": [1, 3],
+                "children": [],
+            },
+            {
+                "title": "习题 1-2",
+                "has_exercise": True,
+                "exercise_page_range": [2, 4],
+                "children": [],
+            },
+        ],
+    }]
+
+    def combined(nodes, _cache_path):
+        for node in nodes:
+            if node.get("has_exercise"):
+                node["exercise_content"] = (
+                    f"## {node['title']}\n1. {node['title']} 第一题\n\n"
+                    f"2. {node['title']} 第二题\n"
+                )
+            combined(node.get("children", []), _cache_path)
+
+    def result_for(workers: int, input_path: str):
+        args = SimpleNamespace(
+            input=input_path,
+            output=None,
+            ocr_cache=os.path.dirname(input_path),
+            doc_type="textbook",
+            document_name="测试教材",
+            analysis_workers=workers,
+        )
+        with patch.object(pipeline, "build_sections", return_value=deepcopy(source_sections)), \
+            patch.object(pipeline, "create_ocr_pipeline", return_value=object()), \
+            patch.object(pipeline, "ocr_pages"), \
+            patch.object(pipeline, "combine_section_pages", side_effect=combined), \
+            patch.object(pipeline.answers, "extract_and_match"), \
+            patch.object(pipeline, "attach_exercise_bboxes"):
+            tree = pipeline.run_pipeline(
+                args,
+                write_outputs_enabled=False,
+                print_summary_enabled=False,
+            )
+
+        public = []
+
+        def collect(nodes, path=""):
+            for node in nodes:
+                node_path = f"{path}/{node['title']}" if path else node["title"]
+                section = public_section_from_node(
+                    node, path=node_path, document_name="测试教材"
+                )
+                if section is not None:
+                    public.append(section)
+                collect(node.get("children", []), node_path)
+
+        collect(tree)
+        return public
+
+    with tempfile.TemporaryDirectory() as tmp:
+        input_path = os.path.join(tmp, "book.pdf")
+        with open(input_path, "wb") as stream:
+            stream.write(b"test pdf bytes")
+        serial = result_for(1, input_path)
+        parallel = result_for(2, input_path)
+    check(
+        "run_pipeline 的双 spawn worker 输出稳定顺序和公共 JSON",
+        parallel == serial
+        and [section["title"] for section in parallel]
+        == ["习题 1-1", "习题 1-2"],
+        repr(parallel),
+    )
+
+
+def test_streaming_spawn_order_close_and_output() -> None:
+    from exercise_extractor import pipeline
+
+    def make_sections():
+        return [
+            {"title": "重复标题", "marker": "甲", "has_exercise": True,
+             "exercise_page_range": [1, 2], "children": []},
+            {"title": "重复标题", "marker": "乙", "has_exercise": True,
+             "exercise_page_range": [2, 3], "children": []},
+        ]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        input_path = os.path.join(tmp, "book.pdf")
+        with open(input_path, "wb") as stream:
+            stream.write(b"fake")
+        with patch("exercise_extractor.pipeline.build_sections", return_value=make_sections()), \
+            patch("exercise_extractor.pipeline.create_ocr_pipeline", return_value=object()), \
+            patch("exercise_extractor.pipeline.ocr_pages"), \
+            patch("exercise_extractor.pipeline.combine_section_pages", side_effect=lambda nodes, _path: [node.update(exercise_content=f"## {node['title']}\n1. {node['marker']} 的题目\n") for node in nodes if node.get("has_exercise")]), \
+            patch("exercise_extractor.pipeline.attach_exercise_bboxes"):
+            args = SimpleNamespace(
+                input=input_path, output=None, ocr_cache=tmp,
+                doc_type="exercise_book", analysis_workers=2,
+            )
+            iterator = pipeline.iter_sections(args)
+            first = next(iterator)
+            iterator.close()
+            check(
+                "并行流式提前关闭仅返回首节",
+                first["exercises"][0]["content"] == "甲 的题目",
+            )
+
+        with patch("exercise_extractor.pipeline.build_sections", return_value=make_sections()), \
+            patch("exercise_extractor.pipeline.create_ocr_pipeline", return_value=object()), \
+            patch("exercise_extractor.pipeline.ocr_pages"), \
+            patch("exercise_extractor.pipeline.combine_section_pages", side_effect=lambda nodes, _path: [node.update(exercise_content=f"## {node['title']}\n1. {node['marker']} 的题目\n") for node in nodes if node.get("has_exercise")]), \
+            patch("exercise_extractor.pipeline.attach_exercise_bboxes"):
+            args = SimpleNamespace(
+                input=input_path, output=None, ocr_cache=tmp,
+                doc_type="exercise_book", analysis_workers=2,
+            )
+            sections = list(pipeline.iter_sections(args))
+        check(
+            "并行流式重复标题仍按源节点顺序返回",
+            [item["exercises"][0]["content"] for item in sections]
+            == ["甲 的题目", "乙 的题目"],
+        )
+
+        output_dir = os.path.join(tmp, "out")
+        unique_sections = [{
+            "title": "第一节", "has_exercise": True,
+            "exercise_page_range": [1, 2], "children": [],
+        }]
+        with patch("exercise_extractor.pipeline.build_sections", return_value=unique_sections), \
+            patch("exercise_extractor.pipeline.create_ocr_pipeline", return_value=object()), \
+            patch("exercise_extractor.pipeline.ocr_pages"), \
+            patch("exercise_extractor.pipeline.combine_section_pages", side_effect=lambda nodes, _path: nodes[0].update(exercise_content="## 第一节\n1. 输出题\n")), \
+            patch("exercise_extractor.pipeline.attach_exercise_bboxes"):
+            args = SimpleNamespace(
+                input=input_path, output=output_dir, ocr_cache=tmp,
+                doc_type="exercise_book", analysis_workers=2,
+            )
+            written = list(pipeline.iter_sections(args, write_outputs_enabled=True))
+        check(
+            "并行流式写出使用来源文件名回退",
+            len(written) == 1 and os.path.isfile(os.path.join(output_dir, "report.json")),
+        )
+
+
 def test_unit_boundaries() -> None:
     from exercise_extractor.parse_md_exercises import (
         filter_exercises_by_section,
@@ -3037,6 +3253,8 @@ def test_cli_engine_device_args() -> None:
             "paddle",
             "--review-concurrency",
             "5",
+            "--analysis-workers",
+            "2",
         ],
     ):
         args = parse_args()
@@ -3045,6 +3263,7 @@ def test_cli_engine_device_args() -> None:
         args.ocr_device == "gpu"
         and args.ocr_engine == "paddle"
         and args.review_concurrency == 5
+        and args.analysis_workers == 2
         and not args.review_with_tools,
         str(
             (

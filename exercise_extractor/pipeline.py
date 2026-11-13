@@ -6,7 +6,12 @@ import os
 import time
 
 from . import answers, exampaper, exercise_book
-from .analysis import analyze_tree
+from .analysis import (
+    analyze_tree,
+    iter_analysis_events,
+    make_analysis_job,
+    validate_analysis_workers,
+)
 from .extraction import combine_section_pages, extract_exercises
 from .exercise_bbox import attach_exercise_bboxes
 from .html_tables import replace_html_tables
@@ -84,7 +89,11 @@ def run_pipeline(
     logger.info("页面拼接完成: elapsed=%.3fs", time.perf_counter() - stage_started)
 
     stage_started = time.perf_counter()
-    analyze_tree(exercise_sections, args.doc_type)
+    analyze_tree(
+        exercise_sections,
+        args.doc_type,
+        analysis_workers=getattr(args, "analysis_workers", None),
+    )
     logger.info("习题分析完成: elapsed=%.3fs", time.perf_counter() - stage_started)
 
     # exampaper 自带答案/解析处理，不走通用答案章节匹配。WebUI 在用户
@@ -199,11 +208,124 @@ def iter_sections(
 
     collect_titles(exercise_sections)
 
-    # 3) 按树序逐节 OCR → 拼页 → 切分 → 回填答案 → yield
     document_name = getattr(
         args, "document_name", os.path.splitext(os.path.basename(args.input))[0]
     )
 
+    analysis_workers = validate_analysis_workers(
+        getattr(args, "analysis_workers", None)
+    )
+    if analysis_workers > 1:
+        nodes_by_token: dict[int, dict] = {}
+        next_token = 0
+
+        def prepare_events(nodes: list, path: str, parent_title: str | None = None):
+            nonlocal next_token
+            for node in nodes:
+                node_path = f"{path}/{node['title']}" if path else node["title"]
+                node["_section_path"] = node_path
+                if node.get("is_answers"):
+                    yield ("answer", node, node_path)
+                    yield from prepare_events(
+                        node.get("children", []), node_path, node.get("title")
+                    )
+                    continue
+                if node.get("has_exercise"):
+                    ocr_pages(args, [node], markdown_path, pipeline)
+                    combine_section_pages([node], markdown_path)
+                    token = next_token
+                    next_token += 1
+                    nodes_by_token[token] = node
+                    yield make_analysis_job(
+                        node,
+                        args.doc_type,
+                        parent_title=parent_title,
+                        known_sections=known_sections,
+                        path=node_path,
+                        token=token,
+                    )
+                yield from prepare_events(
+                    node.get("children", []), node_path, node.get("title")
+                )
+
+        def emit_node(node: dict, node_path: str):
+            node["_section_path"] = node_path
+            if not any(
+                item.get("number") not in (None, "__preamble__")
+                for item in node.get("exercises", [])
+            ):
+                return
+            attach_exercise_bboxes([node], markdown_path)
+            if oss_cfg:
+                apply_oss_images([node], markdown_path, oss_cfg, oss_cache)
+            if write_outputs_enabled:
+                write_section_markdown(node, args.output)
+                write_section_json(
+                    node,
+                    args.output,
+                    path=node_path,
+                    document_name=document_name,
+                )
+            return node
+
+        events = prepare_events(exercise_sections, "")
+        ordered_results = iter_analysis_events(events, analysis_workers)
+        try:
+            for event, result in ordered_results:
+                if isinstance(event, tuple) and event[0] == "answer":
+                    _, node, node_path = event
+                    if oss_cfg:
+                        apply_oss_images([node], markdown_path, oss_cfg, oss_cache)
+                    if write_outputs_enabled:
+                        write_section_markdown(node, args.output)
+                    yield node
+                    continue
+                node_path = event.path or event.section.get("title", "")
+                node = nodes_by_token[event.token]
+                from .analysis import merge_analysis_result
+
+                if not merge_analysis_result(node, result):
+                    logger.info("流式提取丢弃节点: title=%r path=%r", node.get("title"), node_path)
+                    continue
+                if args.doc_type == "exampaper" and node.get("_exampaper_extracted"):
+                    for child in node.get("children", []):
+                        child_path = f"{node_path}/{child['title']}"
+                        emitted = emit_node(child, child_path)
+                        if emitted is not None:
+                            yield emitted
+                    continue
+                if not node.get("has_exercise"):
+                    continue
+                if not any(
+                    item.get("number") not in (None, "__preamble__")
+                    for item in node.get("exercises", [])
+                ):
+                    logger.info("流式提取过滤无编号习题节点: title=%r path=%r", node.get("title"), node_path)
+                    continue
+                emitted = emit_node(node, node_path)
+                if emitted is not None:
+                    yield emitted
+        finally:
+            ordered_results.close() if hasattr(ordered_results, "close") else None
+            events.close() if hasattr(events, "close") else None
+            def cleanup_parallel(nodes: list) -> None:
+                for item in nodes:
+                    item.pop("answer_section", None)
+                    item.pop("_section_path", None)
+                    item.pop("_exampaper_extracted", None)
+                    cleanup_parallel(item.get("children", []))
+
+            cleanup_parallel(exercise_sections)
+        if write_outputs_enabled:
+            write_outputs(
+                exercise_sections,
+                args.output,
+                markdown_path,
+                document_name=document_name,
+            )
+        return
+
+    # 3) 按树序逐节 OCR → 拼页 → 切分 → 回填答案 → yield
     def walk(nodes: list, path: str):
         for node in nodes:
             node_path = f"{path}/{node['title']}" if path else node["title"]

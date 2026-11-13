@@ -400,6 +400,7 @@ def extract_exercise(
     llm_usage_callback: UsageCallback | None = None,
     vl_rec_api_key: Optional[str] = None,
     document_name: Optional[str] = None,
+    analysis_workers: int | None = None,
 ) -> Iterator[dict]:
     """提取 PDF 或一张/多张图片中的习题，返回公共 section 迭代器。
 
@@ -426,6 +427,7 @@ def extract_exercise(
     http(s)://endpoint/bucket/对象键）；缺任一项则不启用。
     write_outputs=True 时必须同时给 output_dir，会额外写出每个 section 的
     md/json 以及 report.json；不再写总的 exercises.json。
+    analysis_workers：习题切分进程数；None 时最多使用 4 个可用 CPU，1 表示顺序执行。
 
     返回迭代器：每完成一个有编号习题的 section 就 yield 一个不含
     ``children`` 的公共 JSON object。section 的 ``path`` 使用 ``/`` 记录
@@ -440,6 +442,9 @@ def extract_exercise(
     )
     if write_outputs and not output_dir:
         raise ValueError("write_outputs=True 时需要提供 output_dir")
+    from .analysis import validate_analysis_workers
+
+    analysis_workers = validate_analysis_workers(analysis_workers)
     model_dir = _resolve_model_dir(model_dir)
     if not model_dir:
         raise ValueError(
@@ -477,6 +482,7 @@ def extract_exercise(
         vl_model=vl_rec_api_model_name,
         doc_type=doc_type,
         llm_usage_callback=llm_usage_callback,
+        analysis_workers=analysis_workers,
     )
     internal_sections = iter_sections(args, write_outputs_enabled=write_outputs)
     document_name = args.document_name
