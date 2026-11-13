@@ -230,6 +230,52 @@ def test_spawn_analysis_scheduler() -> None:
     check("公共 API 拒绝非正分析 worker 数", api_validation)
 
 
+def test_analysis_worker_auto_threshold() -> None:
+    from unittest.mock import patch
+
+    import exercise_extractor.analysis as analysis
+    from exercise_extractor.analysis import (
+        AUTO_PARALLEL_THRESHOLD_BYTES,
+        select_analysis_workers,
+    )
+
+    check(
+        "自动选择对小于阈值的任务保持顺序执行",
+        select_analysis_workers(None, AUTO_PARALLEL_THRESHOLD_BYTES - 1) == 1,
+    )
+    with patch.object(analysis, "default_analysis_workers", return_value=4):
+        check(
+            "自动选择对超过阈值的大任务启用受限 worker 数",
+            select_analysis_workers(None, AUTO_PARALLEL_THRESHOLD_BYTES) == 4,
+        )
+    check(
+        "显式 worker 数覆盖自动阈值",
+        select_analysis_workers(3, 1) == 3
+        and select_analysis_workers(1, AUTO_PARALLEL_THRESHOLD_BYTES * 2) == 1,
+    )
+
+    selected: list[int] = []
+
+    def capture_scheduler(_jobs, workers):
+        selected.append(workers)
+        return iter(())
+
+    with patch.object(analysis, "default_analysis_workers", return_value=4), \
+        patch.object(analysis, "iter_analysis_results", side_effect=capture_scheduler):
+        small = [{
+            "title": "小节", "has_exercise": True,
+            "exercise_content": "1. 小题", "children": [],
+        }]
+        large = [{
+            "title": "大节", "has_exercise": True,
+            "exercise_content": "x" * AUTO_PARALLEL_THRESHOLD_BYTES,
+            "children": [],
+        }]
+        analysis.analyze_tree(small, "textbook")
+        analysis.analyze_tree(large, "textbook")
+    check("分析管线依据实际拼接文本应用自动策略", selected == [1, 4])
+
+
 def test_spawn_pipeline_public_json_matches_sequential() -> None:
     from copy import deepcopy
     from exercise_extractor import pipeline

@@ -8,9 +8,10 @@ import time
 from . import answers, exampaper, exercise_book
 from .analysis import (
     analyze_tree,
+    estimate_analysis_workload_bytes,
     iter_analysis_events,
     make_analysis_jobs,
-    validate_analysis_workers,
+    select_analysis_workers,
 )
 from .extraction import combine_section_pages, extract_exercises
 from .exercise_bbox import attach_exercise_bboxes
@@ -212,8 +213,10 @@ def iter_sections(
         args, "document_name", os.path.splitext(os.path.basename(args.input))[0]
     )
 
-    analysis_workers = validate_analysis_workers(
-        getattr(args, "analysis_workers", None)
+    requested_workers = getattr(args, "analysis_workers", None)
+    analysis_workers = select_analysis_workers(
+        requested_workers,
+        estimate_analysis_workload_bytes(exercise_sections, markdown_path),
     )
     if analysis_workers > 1:
         nodes_by_token: dict[int, dict] = {}

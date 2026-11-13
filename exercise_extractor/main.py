@@ -104,7 +104,7 @@ def parse_args() -> argparse.Namespace:
         "--analysis-workers",
         type=_positive_int,
         default=None,
-        help="习题分析进程数（默认最多 4；1 使用顺序模式）",
+        help="习题分析进程数（默认按工作量自动选择，最多 4；1 使用顺序模式）",
     )
     parser.add_argument(
         "--vl_rec_api_model_name",

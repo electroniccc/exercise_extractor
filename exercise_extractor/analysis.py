@@ -32,6 +32,10 @@ class AnalysisResult:
     discarded: bool = False
 
 
+AUTO_PARALLEL_THRESHOLD_BYTES = 8 * 1024 * 1024
+_ESTIMATED_MARKDOWN_BYTES_PER_PAGE = 4096
+
+
 def default_analysis_workers() -> int:
     affinity_count = None
     if hasattr(os, "sched_getaffinity"):
@@ -48,6 +52,65 @@ def validate_analysis_workers(workers: int | None) -> int:
     if isinstance(workers, bool) or not isinstance(workers, int) or workers < 1:
         raise ValueError("analysis_workers must be a positive integer or None")
     return workers
+
+
+def select_analysis_workers(
+    requested: int | None,
+    workload_bytes: int,
+) -> int:
+    """Use processes automatically only above a conservative input-size floor.
+
+    Eight MiB is deliberately above the largest measured cached sample (about
+    2 MiB), where process startup and serialization outweighed analysis time.
+    Explicit worker counts always take precedence.
+    """
+    if requested is not None:
+        return validate_analysis_workers(requested)
+    if workload_bytes < AUTO_PARALLEL_THRESHOLD_BYTES:
+        return 1
+    return default_analysis_workers()
+
+
+def estimate_analysis_workload_bytes(
+    nodes: list[dict[str, Any]], markdown_path: str | None = None
+) -> int:
+    """Estimate analysis input size from prepared text or the section page ranges.
+
+    For streaming calls before OCR, count each section's pages independently
+    (overlapping sections intentionally count the same page more than once).
+    Cached page Markdown uses its measured byte size; uncached pages use a
+    conservative 4 KiB/page estimate.
+    """
+    if markdown_path is not None:
+        from .ocr_cache import page_cache_is_ready
+
+    total = 0
+
+    def visit(items: list[dict[str, Any]]) -> None:
+        nonlocal total
+        for node in items:
+            if node.get("has_exercise") and not node.get("is_answers"):
+                content = node.get("exercise_content")
+                if isinstance(content, str):
+                    total += len(content.encode("utf-8"))
+                else:
+                    page_range = node.get("exercise_page_range") or []
+                    if len(page_range) == 2 and all(isinstance(p, int) for p in page_range):
+                        for page_num in range(page_range[0], page_range[1]):
+                            size = _ESTIMATED_MARKDOWN_BYTES_PER_PAGE
+                            if markdown_path and page_cache_is_ready(markdown_path, page_num):
+                                page_path = os.path.join(
+                                    markdown_path, f"page_{page_num}", "page.md"
+                                )
+                                try:
+                                    size = os.path.getsize(page_path)
+                                except OSError:
+                                    pass
+                            total += size
+            visit(node.get("children", []))
+
+    visit(nodes)
+    return total
 
 
 def iter_analysis_results(jobs, workers: int | None = None):
@@ -300,9 +363,9 @@ def merge_analysis_result(node: dict[str, Any], result: AnalysisResult) -> bool:
 
 
 def analyze_tree(
-    sections: list[dict[str, Any]], doc_type: str, analysis_workers: int | None = 1
+    sections: list[dict[str, Any]], doc_type: str, analysis_workers: int | None = None
 ) -> None:
-    """Run the serial analysis path through the same detached worker interface."""
+    """Analyze the tree; auto mode stays serial below the workload threshold."""
     from .parse_md_exercises import normalize_section
 
     known_sections: set[str] = set()
@@ -315,6 +378,11 @@ def analyze_tree(
 
     if doc_type not in ("exercise_book", "exampaper"):
         collect_titles(sections)
+
+    workers = select_analysis_workers(
+        analysis_workers,
+        estimate_analysis_workload_bytes(sections),
+    )
 
     nodes_in_order: list[tuple[dict[str, Any], str | None, str]] = []
 
@@ -341,7 +409,7 @@ def analyze_tree(
 
     current_token: int | None = None
     current_parts: list[list[dict[str, Any]]] = []
-    for job, result in iter_analysis_results(jobs(), analysis_workers):
+    for job, result in iter_analysis_results(jobs(), workers):
         token = job.token or 0
         if current_token is not None and token != current_token:
             raise RuntimeError("analysis scheduler returned non-contiguous section parts")
