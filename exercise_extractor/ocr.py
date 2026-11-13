@@ -123,6 +123,7 @@ def build_sections(
     bookmark_result = toc_forge.bookmark_pdf(
         args.input,
         "./temp",
+        write_bookmarked_pdf=False,
         model_dir=args.model_dir,
         cache_dir=os.path.join(args.ocr_cache, "toc_forge"),
         toc_strategy="vllm",

@@ -264,8 +264,9 @@ class TextbookPipelineIntegrationTests(unittest.TestCase):
                 {'title': '1.4 Next', 'page_num': 12},
             ]}]
             args = SimpleNamespace(input=str(source), doc_type='textbook', model_dir=tmp, ocr_cache=tmp)
-            with patch('exercise_extractor.ocr.toc_forge.bookmark_pdf', return_value=SimpleNamespace(toc_tree=toc)):
+            with patch('exercise_extractor.ocr.toc_forge.bookmark_pdf', return_value=SimpleNamespace(toc_tree=toc)) as bookmark_pdf:
                 tree = build_sections(args)
+            self.assertFalse(bookmark_pdf.call_args.kwargs['write_bookmarked_pdf'])
             first = tree[0]['children'][0]['children'][0]
             self.assertEqual(first['title'], '1.1 First')
             self.assertEqual(first['exercise_page_range'][0], 4)
