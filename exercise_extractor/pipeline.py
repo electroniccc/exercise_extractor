@@ -78,27 +78,35 @@ def run_pipeline(
 
     pipeline = create_ocr_pipeline(args)
     ocr_pages(args, exercise_sections, markdown_path, pipeline)
+    stage_started = time.perf_counter()
     combine_section_pages(exercise_sections, markdown_path)
+    logger.info("页面拼接完成: elapsed=%.3fs", time.perf_counter() - stage_started)
 
+    stage_started = time.perf_counter()
     if args.doc_type == "exercise_book":
         exercise_book.extract_exercises(exercise_sections)
     elif args.doc_type == "exampaper":
         exampaper.extract_exercises(exercise_sections)
     else:
         extract_exercises(exercise_sections)
+    logger.info("习题分析完成: elapsed=%.3fs", time.perf_counter() - stage_started)
 
     # exampaper 自带答案/解析处理，不走通用答案章节匹配。WebUI 在用户
     # 明确点击“匹配答案”前仍需提取答案 section 供答案 tab 展示，但关闭
     # 回填步骤，避免题目在用户操作前自动出现答案。
     if args.doc_type != "exampaper":
+        stage_started = time.perf_counter()
         answers.extract_and_match(
             exercise_sections,
             markdown_path,
             match_enabled=match_answers_enabled,
         )
+        logger.info("答案匹配完成: elapsed=%.3fs", time.perf_counter() - stage_started)
 
     # 使用 PaddleOCR-VL 原始 JSON 中的 parsing block，把题目映射回页面坐标。
+    stage_started = time.perf_counter()
     attach_exercise_bboxes(exercise_sections, markdown_path)
+    logger.info("习题 bbox 映射完成: elapsed=%.3fs", time.perf_counter() - stage_started)
 
     # OSS/MinIO：把结果里的本地图片上传，引用替换为 OSS URL
     oss_cfg = oss_config_from_args(args)

@@ -523,7 +523,7 @@ def combine_section_pages(
     def walk(node: SectionNode) -> None:
         if node.get("has_exercise") or node.get("is_answers"):
             start_page, end_page = node["exercise_page_range"]
-            exercise_content = ""
+            page_parts: list[str] = []
             for page_num in range(start_page, end_page):
                 page_markdown_path = os.path.join(
                     markdown_path, f"page_{page_num}", "page.md"
@@ -539,8 +539,8 @@ def combine_section_pages(
                             markdown_path, page_num, node, content
                         )
                     content = rewrite_img_path(content, page_num, markdown_path)
-                    exercise_content += f"\n{page_marker(page_num)}\n{content}\n"
-            node["exercise_content"] = exercise_content
+                    page_parts.append(f"\n{page_marker(page_num)}\n{content}\n")
+            node["exercise_content"] = "".join(page_parts)
         for child_node in node.get("children", []):
             walk(child_node)
 

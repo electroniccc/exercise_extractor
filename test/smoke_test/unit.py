@@ -10,6 +10,35 @@ from unittest.mock import Mock, patch
 from .common import check, run_cli
 
 
+def test_combine_section_pages_preserves_page_markers() -> None:
+    from exercise_extractor.extraction import combine_section_pages
+
+    with tempfile.TemporaryDirectory() as cache_dir:
+        for page, content in ((4, "第一页面"), (5, "第二页面\n正文")):
+            page_dir = os.path.join(cache_dir, f"page_{page}")
+            os.makedirs(page_dir)
+            with open(os.path.join(page_dir, "page.md"), "w", encoding="utf-8") as f:
+                f.write(content)
+            with open(os.path.join(page_dir, "page.json"), "w", encoding="utf-8") as f:
+                f.write("{}")
+            with open(os.path.join(page_dir, "READY"), "w", encoding="utf-8") as f:
+                f.write("ready")
+
+        section = {
+            "title": "习题",
+            "has_exercise": True,
+            "exercise_page_range": [4, 6],
+            "children": [],
+        }
+        combine_section_pages([section], cache_dir)
+        check(
+            "拼接缓存页精确保留页标与换行",
+            section["exercise_content"]
+            == "\n<!-- page: 4 -->\n第一页面\n\n<!-- page: 5 -->\n第二页面\n正文\n",
+            repr(section["exercise_content"]),
+        )
+
+
 def test_unit_boundaries() -> None:
     from exercise_extractor.parse_md_exercises import (
         filter_exercises_by_section,
