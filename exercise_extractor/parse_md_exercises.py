@@ -38,6 +38,11 @@ class Exercise(TypedDict, total=False):
 
 # 题号后常见分隔符：半角句点 / 全角句点 / 顿号 / 半角右括号 / 全角右括号（捕获组）
 _NUMBER_SEPARATOR = r"\\?([.．、)）])"
+NAMED_EXERCISE_RE = re.compile(
+    r"^\s*(?:#{1,6}\s*)?\*{0,2}(?:Exercise|Problem|Question)\s+"
+    r"(\d+(?:\.\d+)*)(?:[.:])?\*{0,2}(?:\s+(.*)|\s*)$",
+    re.IGNORECASE,
+)
 # 行首可能出现的 LaTeX/OCR 噪声前缀（星号、上下标标记、数学定界符等），
 # 任何教材的 OCR 输出都可能带这类符号；只允许它们存在、不要求必须有。
 _EXERCISE_JUNK = r"[*^{}\s$]*"
@@ -853,6 +858,7 @@ def split_exercises(
         html_number = _NUMBERED_HTML_DIV_RE.match(line)
         if html_number:
             line = html_number.group(1)
+        named_exercise = NAMED_EXERCISE_RE.match(line) if not in_display_math else None
 
         # 显示公式内的数字（尤其是 74.000、1.001 等）绝不是题号。公式可以
         # 单行闭合，也可以跨多行；在块内仅原样归入当前题目。
@@ -878,7 +884,7 @@ def split_exercises(
             in_display_math = _advance_display_math_state(line, in_display_math)
             continue
 
-        if HEADING_RE.match(line):
+        if HEADING_RE.match(line) and not named_exercise:
             if _heading_is_ocr_number(line, lines, idx, prev_key):
                 # 题号行被 OCR 误转成标题（如 "### 3. 回答下列问题："）：
                 # 去掉 # 还原为普通行，走下面的题号匹配逻辑
@@ -993,7 +999,12 @@ def split_exercises(
 
         # 例题编号优先于普通数字编号（“例 1.2 …”）。
         m_example = EXAMPLE_NUM_RE.match(line)
-        if m_example:
+        if named_exercise:
+            label = named_exercise.group(1)
+            num_key = tuple(int(n) for n in label.split('.'))
+            sep = ''
+            stripped = named_exercise.group(2) or ''
+        elif m_example:
             label = re.sub(r"\s+", "", m_example.group(1))
             num_key: tuple[int, ...] | None = tuple(
                 int(n) for n in re.findall(r"\d+", label)
@@ -1004,7 +1015,7 @@ def split_exercises(
             # 多级题号（"1.1.1"、"1. 1.7"、"1. 1. 10"）优先匹配
             m_multi = EXERCISE_MULTI_RE.match(line)
         is_range_number = False
-        if m_example:
+        if named_exercise or m_example:
             pass
         elif m_multi:
             parts = [
@@ -1064,6 +1075,8 @@ def split_exercises(
         if in_solution and num_key is not None and not is_new_exercise:
             solution_numbered_steps_seen = True
         if is_new_exercise and in_solution and not (
+            named_exercise
+            or
             _EXPLICIT_MARKDOWN_EXERCISE_RE.match(line)
             or _ESCAPED_EXERCISE_NUMBER_RE.match(line)
             or recover_question_boundary
@@ -1118,7 +1131,7 @@ def split_exercises(
             current_sep = sep
             in_solution = False
             current_marker_explicit = bool(
-                _EXPLICIT_MARKDOWN_EXERCISE_RE.match(line)
+                named_exercise or _EXPLICIT_MARKDOWN_EXERCISE_RE.match(line)
                 or _ESCAPED_EXERCISE_NUMBER_RE.match(line)
             )
             solution_numbered_steps_seen = False

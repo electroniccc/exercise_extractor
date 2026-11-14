@@ -26,6 +26,51 @@ _CHAPTER = re.compile(r"^\s*CHAPTER\s+(\d+)\b", re.IGNORECASE | re.MULTILINE)
 
 def prepare_generic_numbered_sections(toc, document):
     """Recognize unnumbered Exercises headings followed by section-numbered questions."""
+    toc = deepcopy(toc)
+
+    def restore_missing_section_headers(nodes):
+        for chapter in nodes:
+            title_match = re.match(r"^\s*(\d+)\s+\S", chapter.get("title", ""))
+            children = chapter.get("children", [])
+            if title_match and children and isinstance(chapter.get("page_num"), int):
+                chapter_number = title_match[1]
+                known = {}
+                for child in children:
+                    match = re.match(r"^\s*(\d+)\.(\d+)(?!\.\d)\b", child.get("title", ""))
+                    if match and match[1] == chapter_number and isinstance(child.get("page_num"), int):
+                        known[int(match[2])] = child["page_num"]
+                if known:
+                    max_number = max(known)
+                    missing = set(range(1, max_number + 1)) - set(known)
+                    for number in sorted(missing):
+                        previous = max((n for n in known if n < number), default=0)
+                        following = min((n for n in known if n > number), default=None)
+                        start = known.get(previous, chapter["page_num"])
+                        end = known.get(following, len(document) + 1)
+                        header_re = re.compile(
+                            rf"^\s*{re.escape(chapter_number)}\s*\.\s*{number}\s*\.?\s+([A-Z][A-Z '\u2019&-]+?)\s*$",
+                            re.IGNORECASE,
+                        )
+                        for page_index in range(max(0, start - 1), min(len(document), end - 1)):
+                            candidates = []
+                            page = document[page_index]
+                            for block in page.get_text("blocks"):
+                                if block[6] != 0 or block[1] > page.rect.height * 0.2:
+                                    continue
+                                match = header_re.match(block[4].strip())
+                                if match:
+                                    candidates.append(match[1].strip().title())
+                            if candidates:
+                                children.append({
+                                    "title": f"{chapter_number}.{number} {candidates[0]}",
+                                    "page_num": page_index + 1,
+                                })
+                                known[number] = page_index + 1
+                                break
+                    children.sort(key=lambda child: child.get("page_num") or 0)
+            restore_missing_section_headers(children)
+
+    restore_missing_section_headers(toc)
     found = {}
     for index, page in enumerate(document):
         text = page.get_text()

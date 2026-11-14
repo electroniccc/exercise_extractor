@@ -7,6 +7,21 @@ from exercise_extractor.toc_detect import is_exercise_title
 
 
 class TextbookRegionTests(unittest.TestCase):
+    def test_restores_numbered_section_missing_from_toc_using_page_header(self):
+        with pymupdf.open() as doc:
+            for _ in range(9):
+                doc.new_page()
+            doc[2].insert_text((50, 30), '2.1. INDEPENDENCE')
+            doc[3].insert_text((50, 50), '2.1.1. Show that events are independent.')
+            toc = [{'title': '2 Laws', 'page_num': 1, 'children': [
+                {'title': '2.2 Weak Laws', 'page_num': 6},
+            ]}]
+            restored, _ = prepare_generic_numbered_sections(toc, doc)
+        self.assertEqual(
+            [(node['title'], node['page_num']) for node in restored[0]['children']],
+            [('2.1 Independence', 3), ('2.2 Weak Laws', 6)],
+        )
+
     def test_section_prefixed_exercises_expand_earlier_than_tail_window(self):
         with pymupdf.open() as doc:
             for _ in range(13): doc.new_page()
